@@ -411,6 +411,12 @@ export default function App() {
   const [duration, setDuration] =
     useState(0);
 
+  const [audioReady, setAudioReady] =
+    useState(false);
+
+  const [audioError, setAudioError] =
+    useState("");
+
   const [speed, setSpeed] =
     useState(1);
 
@@ -600,6 +606,8 @@ export default function App() {
     setAudioUrl(url);
     setCurrentTime(0);
     setDuration(0);
+    setAudioReady(false);
+    setAudioError("");
 
     notify("音频已加载");
   }
@@ -913,6 +921,10 @@ export default function App() {
       setAudioUrl(
         savedAudioUrl
       );
+      setCurrentTime(0);
+      setDuration(0);
+      setAudioReady(false);
+      setAudioError("");
 
       setPage("practice");
 
@@ -932,7 +944,7 @@ export default function App() {
      Audio Controls
   ===================================================== */
 
-  function togglePlay() {
+  async function togglePlay() {
     const audio =
       audioRef.current;
 
@@ -943,19 +955,91 @@ export default function App() {
       return;
     }
 
+    if (!audioUrl) {
+      notify(
+        "当前没有可播放的音频地址"
+      );
+      return;
+    }
+
     if (audio.paused) {
-      audio
-        .play()
-        .catch((err) => {
-          console.error(
-            err
+      try {
+        setAudioError("");
+
+        /*
+         * 如果音频还没有准备好，先加载。
+         * 不直接调用 play()，避免浏览器在
+         * readyState=0 时无反应。
+         */
+        if (
+          audio.readyState <
+          HTMLMediaElement.HAVE_CURRENT_DATA
+        ) {
+          audio.load();
+
+          await new Promise(
+            (resolve, reject) => {
+              const onCanPlay = () => {
+                cleanup();
+                resolve();
+              };
+
+              const onError = () => {
+                cleanup();
+                reject(
+                  new Error(
+                    "音频资源无法加载"
+                  )
+                );
+              };
+
+              const cleanup = () => {
+                audio.removeEventListener(
+                  "canplay",
+                  onCanPlay
+                );
+                audio.removeEventListener(
+                  "error",
+                  onError
+                );
+              };
+
+              audio.addEventListener(
+                "canplay",
+                onCanPlay,
+                { once: true }
+              );
+
+              audio.addEventListener(
+                "error",
+                onError,
+                { once: true }
+              );
+            }
           );
-          notify(
-            "播放失败，请检查音频文件或 Storage 权限"
-          );
-        });
+        }
+
+        await audio.play();
+        setPlaying(true);
+      } catch (err) {
+        console.error(
+          "audio.play failed:",
+          err
+        );
+
+        setPlaying(false);
+        setAudioError(
+          err?.message ||
+            "音频播放失败"
+        );
+
+        notify(
+          "播放失败：请检查音频文件是否可访问"
+        );
+      }
     } else {
       audio.pause();
+      setPlaying(false);
     }
   }
 
@@ -1972,18 +2056,52 @@ export default function App() {
             <section className="card player-card">
               <audio
                 ref={audioRef}
-                src={audioUrl}
+                src={audioUrl || undefined}
                 preload="metadata"
+                crossOrigin="anonymous"
                 onLoadedMetadata={(
                   event
-                ) =>
+                ) => {
+                  const nextDuration =
+                    Number(
+                      event.currentTarget
+                        .duration
+                    );
+
                   setDuration(
-                    event
-                      .currentTarget
-                      .duration ||
-                      0
-                  )
-                }
+                    Number.isFinite(
+                      nextDuration
+                    )
+                      ? nextDuration
+                      : 0
+                  );
+                }}
+                onDurationChange={(
+                  event
+                ) => {
+                  const nextDuration =
+                    Number(
+                      event.currentTarget
+                        .duration
+                    );
+
+                  if (
+                    Number.isFinite(
+                      nextDuration
+                    )
+                  ) {
+                    setDuration(
+                      nextDuration
+                    );
+                  }
+                }}
+                onCanPlay={() => {
+                  setAudioReady(true);
+                  setAudioError("");
+                }}
+                onLoadedData={() => {
+                  setAudioReady(true);
+                }}
                 onTimeUpdate={
                   handleTimeUpdate
                 }
@@ -2002,6 +2120,21 @@ export default function App() {
                     false
                   )
                 }
+                onError={(
+                  event
+                ) => {
+                  console.error(
+                    "Audio element error:",
+                    event.currentTarget
+                      ?.error
+                  );
+
+                  setPlaying(false);
+                  setAudioReady(false);
+                  setAudioError(
+                    "音频无法播放：请检查 Storage 文件地址、文件格式和权限。"
+                  );
+                }}
               />
 
               <div className="player-title">
@@ -2023,6 +2156,25 @@ export default function App() {
                   句
                 </span>
               </div>
+
+              {audioError && (
+                <div className="error">
+                  {audioError}
+                </div>
+              )}
+
+              {!audioError &&
+                audioUrl &&
+                !audioReady && (
+                  <div
+                    className="loading"
+                    style={{
+                      marginBottom: "12px",
+                    }}
+                  >
+                    正在加载音频……
+                  </div>
+                )}
 
               <div className="time">
                 <span>
@@ -2047,9 +2199,16 @@ export default function App() {
                   0
                 }
                 value={
-                  currentTime
+                  Math.min(
+                    currentTime,
+                    duration || 0
+                  )
                 }
                 step="0.01"
+                disabled={
+                  !audioReady ||
+                  duration <= 0
+                }
                 style={{
                   "--progress": `${progress}%`,
                 }}
