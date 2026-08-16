@@ -116,6 +116,72 @@ function publicStorageUrl(bucket, path) {
   return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${encodedPath}`;
 }
 
+async function signedStorageUrl(bucket, path, expiresIn = 3600) {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+    throw new Error("Supabase 环境变量没有配置。");
+  }
+
+  const encodedPath = path
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/");
+
+  const headers = {
+    apikey: SUPABASE_PUBLISHABLE_KEY,
+    "Content-Type": "application/json",
+  };
+
+  if (SUPABASE_LEGACY_ANON_KEY) {
+    headers.Authorization =
+      `Bearer ${SUPABASE_LEGACY_ANON_KEY}`;
+  }
+
+  const response = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/sign/${bucket}/${encodedPath}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        expiresIn,
+      }),
+    }
+  );
+
+  const text = await response.text();
+
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.message ||
+        data?.error ||
+        text ||
+        "无法生成音频播放地址"
+    );
+  }
+
+  const signedPath =
+    data?.signedURL ||
+    data?.signedUrl ||
+    data?.signed_url;
+
+  if (!signedPath) {
+    throw new Error("Supabase 没有返回有效的音频播放地址。");
+  }
+
+  if (/^https?:\/\//i.test(signedPath)) {
+    return signedPath;
+  }
+
+  return `${SUPABASE_URL}/storage/v1${signedPath.startsWith("/") ? signedPath : `/${signedPath}`}`;
+}
+
 async function uploadStorageFile(
   bucket,
   path,
@@ -504,6 +570,9 @@ export default function App() {
 
   const [dictationChecked, setDictationChecked] =
     useState(false);
+
+  const [dictationScore, setDictationScore] =
+    useState(null);
 
   const [lookup, setLookup] =
     useState(null);
@@ -920,12 +989,13 @@ export default function App() {
       );
 
       const savedAudioUrl =
-        publicStorageUrl(
+        await signedStorageUrl(
           AUDIO_BUCKET,
-          audioPath
+          audioPath,
+          3600
         );
 
-      if (audioUrl) {
+      if (audioUrl?.startsWith("blob:")) {
         URL.revokeObjectURL(
           audioUrl
         );
@@ -1017,9 +1087,10 @@ export default function App() {
         );
 
       const savedAudioUrl =
-        publicStorageUrl(
+        await signedStorageUrl(
           AUDIO_BUCKET,
-          audioPath
+          audioPath,
+          3600
         );
 
       setAudioUrl(
@@ -1146,6 +1217,7 @@ export default function App() {
     setCurrentSentence(index);
     setDictation("");
     setDictationChecked(false);
+    setDictationScore(null);
     setLookup(null);
     replayEndRef.current = null;
 
@@ -1404,6 +1476,44 @@ export default function App() {
         false
       );
     }
+  }
+
+  /* =====================================================
+     Dictation
+  ===================================================== */
+
+  function checkDictation() {
+    const answer = normalizeText(dictation);
+    const target = normalizeText(currentSentenceText);
+
+    if (!target) {
+      notify("当前没有可检查的句子。");
+      return;
+    }
+
+    if (!answer) {
+      setDictationScore(0);
+      setDictationChecked(true);
+      return;
+    }
+
+    const targetWords = target.split(" ").filter(Boolean);
+    const answerWords = answer.split(" ").filter(Boolean);
+
+    let correct = 0;
+
+    targetWords.forEach((word, index) => {
+      if (answerWords[index] === word) {
+        correct += 1;
+      }
+    });
+
+    const score = Math.round(
+      (correct / Math.max(targetWords.length, 1)) * 100
+    );
+
+    setDictationScore(score);
+    setDictationChecked(true);
   }
 
   /* =====================================================
@@ -2000,6 +2110,12 @@ export default function App() {
                     false
                   )
                 }
+                onError={() => {
+                  setPlaying(false);
+                  notify(
+                    "音频加载失败：请检查 listenly-audio 的 Storage 权限。"
+                  );
+                }}
               />
 
               <div className="player-title">
@@ -2337,12 +2453,12 @@ export default function App() {
                       {dictationChecked && (
                         <div className="result">
                           <strong>
-                            {dictationScore
+                            {dictationScore === 100
                               ? "✓ 完全正确"
-                              : "再听一次"}
+                              : `匹配度 ${dictationScore ?? 0}%`}
                           </strong>
 
-                          {!dictationScore && (
+                          {dictationScore !== 100 && (
                             <p>
                               正确答案：
                               {" "}
