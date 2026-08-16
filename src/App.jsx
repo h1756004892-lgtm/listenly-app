@@ -411,12 +411,6 @@ export default function App() {
   const [duration, setDuration] =
     useState(0);
 
-  const [audioReady, setAudioReady] =
-    useState(false);
-
-  const [audioError, setAudioError] =
-    useState("");
-
   const [speed, setSpeed] =
     useState(1);
 
@@ -606,8 +600,6 @@ export default function App() {
     setAudioUrl(url);
     setCurrentTime(0);
     setDuration(0);
-    setAudioReady(false);
-    setAudioError("");
 
     notify("音频已加载");
   }
@@ -921,10 +913,6 @@ export default function App() {
       setAudioUrl(
         savedAudioUrl
       );
-      setCurrentTime(0);
-      setDuration(0);
-      setAudioReady(false);
-      setAudioError("");
 
       setPage("practice");
 
@@ -944,125 +932,88 @@ export default function App() {
      Audio Controls
   ===================================================== */
 
+  async function playAudio(audio) {
+    if (!audio) {
+      notify("请先上传或打开音频");
+      return false;
+    }
+
+    if (!audioUrl) {
+      notify("当前没有可播放的音频");
+      return false;
+    }
+
+    try {
+      /*
+       * readyState === 0 表示音频元素还没有开始加载。
+       * 先主动 load，再等待浏览器准备播放。
+       */
+      if (audio.readyState === 0) {
+        audio.load();
+      }
+
+      await audio.play();
+      setPlaying(true);
+      return true;
+    } catch (err) {
+      console.error("Audio play error:", err);
+      setPlaying(false);
+
+      if (err?.name === "NotAllowedError") {
+        notify("浏览器阻止了播放，请再点击一次播放按钮");
+      } else if (err?.name === "NotSupportedError") {
+        notify("这个音频格式无法播放，请检查 MP3 / WAV / M4A 文件");
+      } else {
+        notify("播放失败，请检查音频文件或 Supabase Storage 权限");
+      }
+
+      return false;
+    }
+  }
+
   async function togglePlay() {
     const audio =
       audioRef.current;
 
     if (!audio) {
-      notify(
-        "请先上传或打开音频"
-      );
-      return;
-    }
-
-    if (!audioUrl) {
-      notify(
-        "当前没有可播放的音频地址"
-      );
+      notify("请先上传或打开音频");
       return;
     }
 
     if (audio.paused) {
-      try {
-        setAudioError("");
-
-        /*
-         * 如果音频还没有准备好，先加载。
-         * 不直接调用 play()，避免浏览器在
-         * readyState=0 时无反应。
-         */
-        if (
-          audio.readyState <
-          HTMLMediaElement.HAVE_CURRENT_DATA
-        ) {
-          audio.load();
-
-          await new Promise(
-            (resolve, reject) => {
-              const onCanPlay = () => {
-                cleanup();
-                resolve();
-              };
-
-              const onError = () => {
-                cleanup();
-                reject(
-                  new Error(
-                    "音频资源无法加载"
-                  )
-                );
-              };
-
-              const cleanup = () => {
-                audio.removeEventListener(
-                  "canplay",
-                  onCanPlay
-                );
-                audio.removeEventListener(
-                  "error",
-                  onError
-                );
-              };
-
-              audio.addEventListener(
-                "canplay",
-                onCanPlay,
-                { once: true }
-              );
-
-              audio.addEventListener(
-                "error",
-                onError,
-                { once: true }
-              );
-            }
-          );
-        }
-
-        await audio.play();
-        setPlaying(true);
-      } catch (err) {
-        console.error(
-          "audio.play failed:",
-          err
-        );
-
-        setPlaying(false);
-        setAudioError(
-          err?.message ||
-            "音频播放失败"
-        );
-
-        notify(
-          "播放失败：请检查音频文件是否可访问"
-        );
-      }
+      await playAudio(audio);
     } else {
       audio.pause();
       setPlaying(false);
     }
   }
 
-  function replayCurrentSentence() {
+  async function replayCurrentSentence() {
     const audio =
       audioRef.current;
 
-    if (!audio) return;
-
-    if (
-      currentStart === null ||
-      currentEnd === null
-    ) {
-      notify(
-        "这句话还没有时间轴，请先标记开始和结束。"
-      );
+    if (!audio) {
+      notify("请先上传或打开音频");
       return;
     }
 
-    audio.currentTime =
-      currentStart;
+    /*
+     * 有完整时间轴：从当前句开始位置重播。
+     * 没有时间轴：从当前播放位置正常播放整段音频。
+     */
+    if (
+      currentStart !== null &&
+      currentEnd !== null
+    ) {
+      try {
+        audio.currentTime =
+          currentStart;
+      } catch (err) {
+        console.error("Seek error:", err);
+      }
+    }
 
-    audio.play().catch(() => {});
+    await playAudio(audio);
   }
 
   function handleTimeUpdate(
@@ -1081,7 +1032,6 @@ export default function App() {
      *
      * 没有时间轴时直接让整段音频正常播放。
      */
-
     if (
       currentStart !== null &&
       currentEnd !== null &&
@@ -1090,69 +1040,138 @@ export default function App() {
         currentEnd
     ) {
       audio.pause();
-      audio.currentTime =
-        currentEnd;
+
+      try {
+        audio.currentTime =
+          currentEnd;
+      } catch (err) {
+        console.error(err);
+      }
+
+      setPlaying(false);
     }
   }
 
   function goPreviousSentence() {
+    if (!sentences.length) {
+      notify("当前材料没有句子");
+      return;
+    }
+
     setCurrentSentence(
-      (value) =>
-        Math.max(
-          0,
-          value - 1
-        )
+      (value) => {
+        const nextIndex =
+          Math.max(
+            0,
+            value - 1
+          );
+
+        const item =
+          sentences[nextIndex];
+
+        if (
+          audioRef.current &&
+          item?.start_time !== null &&
+          item?.start_time !== undefined &&
+          item?.start_time !== "" &&
+          Number.isFinite(
+            Number(item.start_time)
+          )
+        ) {
+          try {
+            audioRef.current.currentTime =
+              Number(item.start_time);
+          } catch (err) {
+            console.error("Seek error:", err);
+          }
+        }
+
+        return nextIndex;
+      }
     );
 
     setDictation("");
-    setDictationChecked(
-      false
-    );
+    setDictationChecked(false);
     setLookup(null);
   }
 
   function goNextSentence() {
+    if (!sentences.length) {
+      notify("当前材料没有句子");
+      return;
+    }
+
     setCurrentSentence(
-      (value) =>
-        Math.min(
-          sentences.length - 1,
-          value + 1
-        )
+      (value) => {
+        const nextIndex =
+          Math.min(
+            sentences.length - 1,
+            value + 1
+          );
+
+        const item =
+          sentences[nextIndex];
+
+        if (
+          audioRef.current &&
+          item?.start_time !== null &&
+          item?.start_time !== undefined &&
+          item?.start_time !== "" &&
+          Number.isFinite(
+            Number(item.start_time)
+          )
+        ) {
+          try {
+            audioRef.current.currentTime =
+              Number(item.start_time);
+          } catch (err) {
+            console.error("Seek error:", err);
+          }
+        }
+
+        return nextIndex;
+      }
     );
 
     setDictation("");
-    setDictationChecked(
-      false
-    );
+    setDictationChecked(false);
     setLookup(null);
   }
 
   function selectSentence(
     index
   ) {
+    if (
+      index < 0 ||
+      index >= sentences.length
+    ) {
+      return;
+    }
+
     setCurrentSentence(index);
 
     setDictation("");
-    setDictationChecked(
-      false
-    );
+    setDictationChecked(false);
     setLookup(null);
 
     const item =
       sentences[index];
 
     if (
+      audioRef.current &&
+      item?.start_time !== null &&
+      item?.start_time !== undefined &&
+      item?.start_time !== "" &&
       Number.isFinite(
-        Number(
-          item?.start_time
-        )
-      ) &&
-      audioRef.current
+        Number(item.start_time)
+      )
     ) {
-      audioRef.current.currentTime =
-        Number(
-          item.start_time
-        );
+      try {
+        audioRef.current.currentTime =
+          Number(item.start_time);
+      } catch (err) {
+        console.error("Seek error:", err);
+      }
     }
   }
 
@@ -2055,86 +2074,66 @@ export default function App() {
 
             <section className="card player-card">
               <audio
+                key={audioUrl || "empty-audio"}
                 ref={audioRef}
                 src={audioUrl || undefined}
-                preload="metadata"
-                crossOrigin="anonymous"
+                preload="auto"
                 onLoadedMetadata={(
                   event
                 ) => {
-                  const nextDuration =
-                    Number(
-                      event.currentTarget
-                        .duration
-                    );
+                  const audio =
+                    event.currentTarget;
 
                   setDuration(
                     Number.isFinite(
-                      nextDuration
+                      audio.duration
                     )
-                      ? nextDuration
+                      ? audio.duration
                       : 0
                   );
-                }}
-                onDurationChange={(
-                  event
-                ) => {
-                  const nextDuration =
-                    Number(
-                      event.currentTarget
-                        .duration
-                    );
 
-                  if (
-                    Number.isFinite(
-                      nextDuration
-                    )
-                  ) {
-                    setDuration(
-                      nextDuration
-                    );
-                  }
+                  setCurrentTime(
+                    audio.currentTime || 0
+                  );
+
+                  audio.playbackRate =
+                    speed;
                 }}
                 onCanPlay={() => {
-                  setAudioReady(true);
-                  setAudioError("");
+                  console.log(
+                    "Listenly audio ready:",
+                    audioUrl
+                  );
                 }}
-                onLoadedData={() => {
-                  setAudioReady(true);
+                onError={(event) => {
+                  const audio =
+                    event.currentTarget;
+
+                  console.error(
+                    "Listenly audio error:",
+                    audio.error
+                  );
+
+                  setPlaying(false);
+
+                  if (audioUrl) {
+                    notify(
+                      "音频加载失败，请检查 Supabase Storage 中的音频文件和权限"
+                    );
+                  }
                 }}
                 onTimeUpdate={
                   handleTimeUpdate
                 }
                 onPlay={() =>
-                  setPlaying(
-                    true
-                  )
+                  setPlaying(true)
                 }
                 onPause={() =>
-                  setPlaying(
-                    false
-                  )
+                  setPlaying(false)
                 }
                 onEnded={() =>
-                  setPlaying(
-                    false
-                  )
+                  setPlaying(false)
                 }
-                onError={(
-                  event
-                ) => {
-                  console.error(
-                    "Audio element error:",
-                    event.currentTarget
-                      ?.error
-                  );
-
-                  setPlaying(false);
-                  setAudioReady(false);
-                  setAudioError(
-                    "音频无法播放：请检查 Storage 文件地址、文件格式和权限。"
-                  );
-                }}
               />
 
               <div className="player-title">
@@ -2156,25 +2155,6 @@ export default function App() {
                   句
                 </span>
               </div>
-
-              {audioError && (
-                <div className="error">
-                  {audioError}
-                </div>
-              )}
-
-              {!audioError &&
-                audioUrl &&
-                !audioReady && (
-                  <div
-                    className="loading"
-                    style={{
-                      marginBottom: "12px",
-                    }}
-                  >
-                    正在加载音频……
-                  </div>
-                )}
 
               <div className="time">
                 <span>
@@ -2199,16 +2179,9 @@ export default function App() {
                   0
                 }
                 value={
-                  Math.min(
-                    currentTime,
-                    duration || 0
-                  )
+                  currentTime
                 }
                 step="0.01"
-                disabled={
-                  !audioReady ||
-                  duration <= 0
-                }
                 style={{
                   "--progress": `${progress}%`,
                 }}
@@ -2230,6 +2203,7 @@ export default function App() {
 
               <div className="player-controls">
                 <button
+                  type="button"
                   className="primary round"
                   onClick={
                     togglePlay
@@ -2241,6 +2215,7 @@ export default function App() {
                 </button>
 
                 <button
+                  type="button"
                   className="secondary"
                   onClick={
                     replayCurrentSentence
@@ -2250,6 +2225,7 @@ export default function App() {
                 </button>
 
                 <button
+                  type="button"
                   className="secondary"
                   onClick={
                     goPreviousSentence
@@ -2259,6 +2235,7 @@ export default function App() {
                 </button>
 
                 <button
+                  type="button"
                   className="secondary"
                   onClick={
                     goNextSentence
