@@ -932,246 +932,149 @@ export default function App() {
      Audio Controls
   ===================================================== */
 
-  async function playAudio(audio) {
-    if (!audio) {
-      notify("请先上传或打开音频");
-      return false;
-    }
-
-    if (!audioUrl) {
-      notify("当前没有可播放的音频");
-      return false;
-    }
-
-    try {
-      /*
-       * readyState === 0 表示音频元素还没有开始加载。
-       * 先主动 load，再等待浏览器准备播放。
-       */
-      if (audio.readyState === 0) {
-        audio.load();
-      }
-
-      await audio.play();
-      setPlaying(true);
-      return true;
-    } catch (err) {
-      console.error("Audio play error:", err);
-      setPlaying(false);
-
-      if (err?.name === "NotAllowedError") {
-        notify("浏览器阻止了播放，请再点击一次播放按钮");
-      } else if (err?.name === "NotSupportedError") {
-        notify("这个音频格式无法播放，请检查 MP3 / WAV / M4A 文件");
-      } else {
-        notify("播放失败，请检查音频文件或 Supabase Storage 权限");
-      }
-
-      return false;
-    }
-  }
-
-  async function togglePlay() {
-    const audio =
-      audioRef.current;
+  function togglePlay() {
+    const audio = audioRef.current;
 
     if (!audio) {
       notify("请先上传或打开音频");
       return;
     }
 
+    if (!audioUrl) {
+      notify("当前没有可播放的音频。");
+      return;
+    }
+
     if (audio.paused) {
-      await playAudio(audio);
+      if (audio.readyState === 0) {
+        audio.load();
+        notify("正在加载音频，请稍等……");
+        return;
+      }
+
+      audio.play()
+        .then(() => setPlaying(true))
+        .catch((err) => {
+          console.error("Audio play error:", err);
+          setPlaying(false);
+          notify(
+            err?.name === "NotSupportedError"
+              ? "这个音频格式无法播放，请检查 MP3 / WAV / M4A 文件。"
+              : "播放失败，请检查音频文件或 Storage 权限。"
+          );
+        });
     } else {
       audio.pause();
       setPlaying(false);
     }
   }
 
-  async function replayCurrentSentence() {
-    const audio =
-      audioRef.current;
+  function replayCurrentSentence() {
+    const audio = audioRef.current;
 
     if (!audio) {
       notify("请先上传或打开音频");
       return;
     }
 
-    /*
-     * 有完整时间轴：从当前句开始位置重播。
-     * 没有时间轴：从当前播放位置正常播放整段音频。
-     */
-    if (
-      currentStart !== null &&
-      currentEnd !== null
-    ) {
-      try {
-        audio.currentTime =
-          currentStart;
-      } catch (err) {
-        console.error("Seek error:", err);
-      }
+    if (!audioUrl) {
+      notify("当前没有可播放的音频。");
+      return;
     }
 
-    await playAudio(audio);
+    if (currentStart !== null && currentEnd !== null) {
+      audio.currentTime = currentStart;
+    }
+
+    audio.play()
+      .then(() => setPlaying(true))
+      .catch((err) => {
+        console.error("Replay error:", err);
+        notify("播放失败，请检查音频文件或 Storage 权限。");
+      });
   }
 
-  function handleTimeUpdate(
-    event
-  ) {
-    const audio =
-      event.currentTarget;
+  function handleTimeUpdate(event) {
+    const audio = event.currentTarget;
 
-    setCurrentTime(
-      audio.currentTime
-    );
+    setCurrentTime(audio.currentTime);
 
-    /*
-     * 只有真正存在开始/结束时间轴时，
-     * 才限制当前句播放范围。
-     *
-     * 没有时间轴时直接让整段音频正常播放。
-     */
     if (
       currentStart !== null &&
       currentEnd !== null &&
       !audio.paused &&
-      audio.currentTime >=
-        currentEnd
+      audio.currentTime >= currentEnd
     ) {
       audio.pause();
-
-      try {
-        audio.currentTime =
-          currentEnd;
-      } catch (err) {
-        console.error(err);
-      }
-
+      audio.currentTime = currentEnd;
       setPlaying(false);
     }
   }
 
   function goPreviousSentence() {
     if (!sentences.length) {
-      notify("当前材料没有句子");
+      notify("当前材料还没有句子。");
       return;
     }
 
-    setCurrentSentence(
-      (value) => {
-        const nextIndex =
-          Math.max(
-            0,
-            value - 1
-          );
-
-        const item =
-          sentences[nextIndex];
-
-        if (
-          audioRef.current &&
-          item?.start_time !== null &&
-          item?.start_time !== undefined &&
-          item?.start_time !== "" &&
-          Number.isFinite(
-            Number(item.start_time)
-          )
-        ) {
-          try {
-            audioRef.current.currentTime =
-              Number(item.start_time);
-          } catch (err) {
-            console.error("Seek error:", err);
-          }
-        }
-
-        return nextIndex;
-      }
-    );
-
+    const previousIndex = Math.max(0, currentSentence - 1);
+    setCurrentSentence(previousIndex);
     setDictation("");
     setDictationChecked(false);
     setLookup(null);
+
+    const item = sentences[previousIndex];
+    const start = item?.start_time;
+    if (audioRef.current && start !== null && start !== undefined && start !== "" && Number.isFinite(Number(start))) {
+      audioRef.current.currentTime = Number(start);
+    }
   }
 
   function goNextSentence() {
     if (!sentences.length) {
-      notify("当前材料没有句子");
+      notify("当前材料还没有句子。");
       return;
     }
 
-    setCurrentSentence(
-      (value) => {
-        const nextIndex =
-          Math.min(
-            sentences.length - 1,
-            value + 1
-          );
-
-        const item =
-          sentences[nextIndex];
-
-        if (
-          audioRef.current &&
-          item?.start_time !== null &&
-          item?.start_time !== undefined &&
-          item?.start_time !== "" &&
-          Number.isFinite(
-            Number(item.start_time)
-          )
-        ) {
-          try {
-            audioRef.current.currentTime =
-              Number(item.start_time);
-          } catch (err) {
-            console.error("Seek error:", err);
-          }
-        }
-
-        return nextIndex;
-      }
-    );
-
+    const nextIndex = Math.min(sentences.length - 1, currentSentence + 1);
+    setCurrentSentence(nextIndex);
     setDictation("");
     setDictationChecked(false);
     setLookup(null);
+
+    const item = sentences[nextIndex];
+    const start = item?.start_time;
+    if (audioRef.current && start !== null && start !== undefined && start !== "" && Number.isFinite(Number(start))) {
+      audioRef.current.currentTime = Number(start);
+    }
   }
 
   function selectSentence(
     index
   ) {
-    if (
-      index < 0 ||
-      index >= sentences.length
-    ) {
-      return;
-    }
-
     setCurrentSentence(index);
 
     setDictation("");
-    setDictationChecked(false);
+    setDictationChecked(
+      false
+    );
     setLookup(null);
 
     const item =
       sentences[index];
 
     if (
-      audioRef.current &&
-      item?.start_time !== null &&
-      item?.start_time !== undefined &&
-      item?.start_time !== "" &&
       Number.isFinite(
-        Number(item.start_time)
-      )
+        Number(
+          item?.start_time
+        )
+      ) &&
+      audioRef.current
     ) {
-      try {
-        audioRef.current.currentTime =
-          Number(item.start_time);
-      } catch (err) {
-        console.error("Seek error:", err);
-      }
+      audioRef.current.currentTime =
+        Number(
+          item.start_time
+        );
     }
   }
 
@@ -2074,66 +1977,38 @@ export default function App() {
 
             <section className="card player-card">
               <audio
-                key={audioUrl || "empty-audio"}
+                key={audioUrl || "no-audio"}
                 ref={audioRef}
                 src={audioUrl || undefined}
                 preload="auto"
-                onLoadedMetadata={(
-                  event
-                ) => {
-                  const audio =
-                    event.currentTarget;
-
+                onLoadedMetadata={(event) => {
+                  const audio = event.currentTarget;
                   setDuration(
-                    Number.isFinite(
-                      audio.duration
-                    )
+                    Number.isFinite(audio.duration)
                       ? audio.duration
                       : 0
                   );
-
-                  setCurrentTime(
-                    audio.currentTime || 0
-                  );
-
-                  audio.playbackRate =
-                    speed;
+                  setCurrentTime(audio.currentTime || 0);
                 }}
                 onCanPlay={() => {
-                  console.log(
-                    "Listenly audio ready:",
-                    audioUrl
-                  );
+                  console.log("Audio can play:", audioUrl);
                 }}
                 onError={(event) => {
-                  const audio =
-                    event.currentTarget;
-
-                  console.error(
-                    "Listenly audio error:",
-                    audio.error
-                  );
-
+                  const audio = event.currentTarget;
+                  console.error("Audio loading error:", audio.error);
                   setPlaying(false);
-
-                  if (audioUrl) {
+                  if (audio.error) {
                     notify(
-                      "音频加载失败，请检查 Supabase Storage 中的音频文件和权限"
+                      audio.error.message
+                        ? `音频加载失败：${audio.error.message}`
+                        : "音频加载失败，请检查 Supabase Storage。"
                     );
                   }
                 }}
-                onTimeUpdate={
-                  handleTimeUpdate
-                }
-                onPlay={() =>
-                  setPlaying(true)
-                }
-                onPause={() =>
-                  setPlaying(false)
-                }
-                onEnded={() =>
-                  setPlaying(false)
-                }
+                onTimeUpdate={handleTimeUpdate}
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+                onEnded={() => setPlaying(false)}
               />
 
               <div className="player-title">
@@ -2201,25 +2076,46 @@ export default function App() {
                 }}
               />
 
-              <div className="player-controls">
+              <div
+                className="player-controls"
+                style={{
+                  position: "relative",
+                  zIndex: 100,
+                  pointerEvents: "auto",
+                }}
+              >
                 <button
                   type="button"
                   className="primary round"
-                  onClick={
-                    togglePlay
-                  }
+                  style={{
+                    position: "relative",
+                    zIndex: 101,
+                    pointerEvents: "auto",
+                    cursor: "pointer",
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    togglePlay();
+                  }}
                 >
-                  {playing
-                    ? "Ⅱ"
-                    : "▶"}
+                  {playing ? "Ⅱ" : "▶"}
                 </button>
 
                 <button
                   type="button"
                   className="secondary"
-                  onClick={
-                    replayCurrentSentence
-                  }
+                  style={{
+                    position: "relative",
+                    zIndex: 101,
+                    pointerEvents: "auto",
+                    cursor: "pointer",
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    replayCurrentSentence();
+                  }}
                 >
                   ↻ 重播本句
                 </button>
@@ -2227,9 +2123,44 @@ export default function App() {
                 <button
                   type="button"
                   className="secondary"
-                  onClick={
-                    goPreviousSentence
-                  }
+                  style={{
+                    position: "relative",
+                    zIndex: 101,
+                    pointerEvents: "auto",
+                    cursor: "pointer",
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    if (!sentences.length) {
+                      notify("当前材料还没有句子。");
+                      return;
+                    }
+
+                    const previousIndex = Math.max(
+                      0,
+                      currentSentence - 1
+                    );
+
+                    setCurrentSentence(previousIndex);
+                    setDictation("");
+                    setDictationChecked(false);
+                    setLookup(null);
+
+                    const item = sentences[previousIndex];
+                    const start = item?.start_time;
+
+                    if (
+                      audioRef.current &&
+                      start !== null &&
+                      start !== undefined &&
+                      start !== "" &&
+                      Number.isFinite(Number(start))
+                    ) {
+                      audioRef.current.currentTime = Number(start);
+                    }
+                  }}
                 >
                   ← 上一句
                 </button>
@@ -2237,9 +2168,44 @@ export default function App() {
                 <button
                   type="button"
                   className="secondary"
-                  onClick={
-                    goNextSentence
-                  }
+                  style={{
+                    position: "relative",
+                    zIndex: 101,
+                    pointerEvents: "auto",
+                    cursor: "pointer",
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    if (!sentences.length) {
+                      notify("当前材料还没有句子。");
+                      return;
+                    }
+
+                    const nextIndex = Math.min(
+                      sentences.length - 1,
+                      currentSentence + 1
+                    );
+
+                    setCurrentSentence(nextIndex);
+                    setDictation("");
+                    setDictationChecked(false);
+                    setLookup(null);
+
+                    const item = sentences[nextIndex];
+                    const start = item?.start_time;
+
+                    if (
+                      audioRef.current &&
+                      start !== null &&
+                      start !== undefined &&
+                      start !== "" &&
+                      Number.isFinite(Number(start))
+                    ) {
+                      audioRef.current.currentTime = Number(start);
+                    }
+                  }}
                 >
                   下一句 →
                 </button>
