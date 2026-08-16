@@ -11,8 +11,14 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
    Supabase
 ========================================================= */
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_URL =
+  import.meta.env.VITE_SUPABASE_URL;
+
+const SUPABASE_PUBLISHABLE_KEY =
+  import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+const SUPABASE_LEGACY_ANON_KEY =
+  import.meta.env.VITE_SUPABASE_LEGACY_ANON_KEY || "";
 
 const AUDIO_BUCKET = "listenly-audio";
 const PDF_BUCKET = "listenly-pdf";
@@ -28,31 +34,39 @@ const TRANSLATE_API =
 ========================================================= */
 
 async function supabaseRequest(path, options = {}) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     throw new Error(
-      "Supabase 环境变量没有配置，请检查 Vercel Environment Variables。"
+      "Supabase 环境变量没有配置。"
     );
+  }
+
+  const headers = {
+    apikey: SUPABASE_PUBLISHABLE_KEY,
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+
+  /*
+   * 重要：
+   * sb_publishable_... 不是 JWT，
+   * 不要：
+   *
+   * Authorization: Bearer sb_publishable_...
+   *
+   * 如果存在 Legacy anon JWT，
+   * 数据库请求也可以使用它作为 Authorization。
+   */
+
+  if (SUPABASE_LEGACY_ANON_KEY) {
+    headers.Authorization =
+      `Bearer ${SUPABASE_LEGACY_ANON_KEY}`;
   }
 
   const response = await fetch(
     `${SUPABASE_URL}/rest/v1/${path}`,
     {
       ...options,
-
-      headers: {
-        /*
-         * 重要：
-         * 不再使用 Authorization: Bearer ${SUPABASE_KEY}
-         *
-         * 因为新版 Supabase publishable key
-         * 不是 JWT。
-         */
-        apikey: SUPABASE_KEY,
-
-        "Content-Type": "application/json",
-
-        ...(options.headers || {}),
-      },
+      headers,
     }
   );
 
@@ -72,7 +86,7 @@ async function supabaseRequest(path, options = {}) {
         data?.error_description ||
         data?.error ||
         text ||
-        `Supabase 请求失败：${response.status}`
+        "Supabase 请求失败"
     );
   }
 
@@ -102,57 +116,67 @@ function publicStorageUrl(bucket, path) {
   return `${SUPABASE_URL}/storage/v1/object/public/${bucket}/${encodedPath}`;
 }
 
-async function uploadStorageFile(bucket, path, file) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    throw new Error("Supabase 环境变量没有配置。");
+async function uploadStorageFile(
+  bucket,
+  path,
+  file
+) {
+  if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+    throw new Error(
+      "Supabase 环境变量没有配置。"
+    );
   }
 
   const encodedPath = path
     .split("/")
-    .map((item) => encodeURIComponent(item))
+    .map(encodeURIComponent)
     .join("/");
+
+  const headers = {
+    apikey: SUPABASE_PUBLISHABLE_KEY,
+    "Content-Type":
+      file.type || "application/octet-stream",
+    "x-upsert": "false",
+  };
+
+  /*
+   * Storage 上传如果需要 JWT，
+   * 使用 Legacy anon JWT。
+   *
+   * 注意：
+   * 绝对不能把 sb_publishable_...
+   * 放到 Authorization。
+   */
+
+  if (SUPABASE_LEGACY_ANON_KEY) {
+    headers.Authorization =
+      `Bearer ${SUPABASE_LEGACY_ANON_KEY}`;
+  }
 
   const response = await fetch(
     `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodedPath}`,
     {
       method: "POST",
-
-      /*
-       * 重要：
-       * 这里也不使用 Authorization Bearer。
-       */
-      headers: {
-        apikey: SUPABASE_KEY,
-
-        "Content-Type":
-          file.type || "application/octet-stream",
-
-        "x-upsert": "false",
-      },
-
+      headers,
       body: file,
     }
   );
 
   const text = await response.text();
 
+  let data = null;
+
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
   if (!response.ok) {
-    let errorMessage = text;
-
-    try {
-      const data = text ? JSON.parse(text) : null;
-
-      errorMessage =
-        data?.message ||
-        data?.error ||
-        data?.error_description ||
-        text;
-    } catch {
-      // 保持原始文本
-    }
-
     throw new Error(
-      errorMessage ||
+      data?.message ||
+        data?.error ||
+        text ||
         `Storage 上传失败：${bucket}`
     );
   }
@@ -161,16 +185,20 @@ async function uploadStorageFile(bucket, path, file) {
 }
 
 /* =========================================================
-   Text helpers
+   Text
 ========================================================= */
 
 function splitSentences(text) {
   return String(text || "")
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
-    .split(/(?<=[.!?。！？])\s+|\n+/)
+    .split(
+      /(?<=[.!?。！？])\s+|\n+/
+    )
     .map((item) => item.trim())
-    .filter((item) => item.length > 1);
+    .filter(
+      (item) => item.length > 1
+    );
 }
 
 function normalizeText(text) {
@@ -185,27 +213,34 @@ function normalizeText(text) {
 function cleanWord(word) {
   return String(word || "")
     .toLowerCase()
-    .replace(/^[^a-z'-]+|[^a-z'-]+$/gi, "");
+    .replace(
+      /^[^a-z'-]+|[^a-z'-]+$/gi,
+      ""
+    );
 }
 
 function formatTime(seconds) {
-  if (!Number.isFinite(Number(seconds))) {
+  if (!Number.isFinite(seconds)) {
     return "00:00";
   }
 
   const total = Math.max(
     0,
-    Math.floor(Number(seconds))
+    Math.floor(seconds)
   );
 
   const minutes = Math.floor(total / 60);
 
-  const secondsPart = total % 60;
+  const secondsPart =
+    total % 60;
 
   return `${String(minutes).padStart(
     2,
     "0"
-  )}:${String(secondsPart).padStart(2, "0")}`;
+  )}:${String(secondsPart).padStart(
+    2,
+    "0"
+  )}`;
 }
 
 /* =========================================================
@@ -213,11 +248,13 @@ function formatTime(seconds) {
 ========================================================= */
 
 async function extractPdfText(file) {
-  const buffer = await file.arrayBuffer();
+  const buffer =
+    await file.arrayBuffer();
 
-  const pdf = await pdfjsLib.getDocument({
-    data: buffer,
-  }).promise;
+  const pdf =
+    await pdfjsLib.getDocument({
+      data: buffer,
+    }).promise;
 
   const pages = [];
 
@@ -226,16 +263,20 @@ async function extractPdfText(file) {
     pageNumber <= pdf.numPages;
     pageNumber++
   ) {
-    const page = await pdf.getPage(pageNumber);
+    const page =
+      await pdf.getPage(pageNumber);
 
     const content =
       await page.getTextContent();
 
-    const text = content.items
-      .map((item) => item.str || "")
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const text =
+      content.items
+        .map(
+          (item) => item.str || ""
+        )
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
 
     pages.push(text);
   }
@@ -260,16 +301,26 @@ function cleanPdfTranscript(fullText) {
     )
     .trim();
 
-  const lower = text.toLowerCase();
+  const lower =
+    text.toLowerCase();
 
   const positions = [
-    lower.lastIndexOf("\ntranscript"),
-    lower.lastIndexOf(" transcript "),
-    lower.lastIndexOf("transcript:"),
-  ].filter((item) => item >= 0);
+    lower.lastIndexOf(
+      "\ntranscript"
+    ),
+    lower.lastIndexOf(
+      " transcript "
+    ),
+    lower.lastIndexOf(
+      "transcript:"
+    ),
+  ].filter(
+    (item) => item >= 0
+  );
 
   if (positions.length) {
-    const index = Math.max(...positions);
+    const index =
+      Math.max(...positions);
 
     text = text
       .slice(index)
@@ -281,17 +332,23 @@ function cleanPdfTranscript(fullText) {
   }
 
   const looksLikeQuestions =
-    /\bquestions?\b/i.test(text) &&
-    /\banswers?\b/i.test(text);
+    /\bquestions?\b/i.test(
+      text
+    ) &&
+    /\banswers?\b/i.test(
+      text
+    );
 
   if (
     looksLikeQuestions &&
-    !/transcript/i.test(fullText)
+    !/transcript/i.test(
+      fullText
+    )
   ) {
     return {
       text: "",
       warning:
-        "这个 PDF 没有检测到真正的 Transcript，因此没有把题目内容当成听力文稿。",
+        "这个 PDF 没有检测到真正的 Transcript，因此没有把题目内容冒充成听力文稿。",
     };
   }
 
@@ -306,11 +363,14 @@ function cleanPdfTranscript(fullText) {
 ========================================================= */
 
 export default function App() {
-  const audioRef = useRef(null);
+  const audioRef =
+    useRef(null);
 
-  const audioInputRef = useRef(null);
+  const audioInputRef =
+    useRef(null);
 
-  const pdfInputRef = useRef(null);
+  const pdfInputRef =
+    useRef(null);
 
   const [page, setPage] =
     useState("library");
@@ -381,9 +441,39 @@ export default function App() {
   const [pdfWarning, setPdfWarning] =
     useState("");
 
-  /* =======================================================
+  const currentSentenceData =
+    sentences[currentSentence] ||
+    null;
+
+  const currentSentenceText =
+    currentSentenceData?.text ||
+    "";
+
+  const currentStart =
+    Number.isFinite(
+      Number(
+        currentSentenceData?.start_time
+      )
+    )
+      ? Number(
+          currentSentenceData.start_time
+        )
+      : null;
+
+  const currentEnd =
+    Number.isFinite(
+      Number(
+        currentSentenceData?.end_time
+      )
+    )
+      ? Number(
+          currentSentenceData.end_time
+        )
+      : null;
+
+  /* =====================================================
      Initial
-  ======================================================= */
+  ===================================================== */
 
   useEffect(() => {
     loadMaterials();
@@ -392,24 +482,24 @@ export default function App() {
 
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.playbackRate = speed;
+      audioRef.current.playbackRate =
+        speed;
     }
   }, [speed]);
 
   useEffect(() => {
     return () => {
-      if (
-        audioUrl &&
-        audioUrl.startsWith("blob:")
-      ) {
-        URL.revokeObjectURL(audioUrl);
+      if (audioUrl) {
+        URL.revokeObjectURL(
+          audioUrl
+        );
       }
     };
   }, [audioUrl]);
 
-  /* =======================================================
-     Notification
-  ======================================================= */
+  /* =====================================================
+     Toast
+  ===================================================== */
 
   function notify(text) {
     setMessage(text);
@@ -419,9 +509,9 @@ export default function App() {
     }, 3000);
   }
 
-  /* =======================================================
+  /* =====================================================
      Database
-  ======================================================= */
+  ===================================================== */
 
   async function loadMaterials() {
     try {
@@ -430,17 +520,16 @@ export default function App() {
           "materials?select=*&order=created_at.desc"
         );
 
-      setMaterials(data || []);
+      setMaterials(
+        Array.isArray(data)
+          ? data
+          : []
+      );
     } catch (err) {
       console.error(
         "loadMaterials:",
         err
       );
-
-      /*
-       * 不在页面直接显示旧的认证错误，
-       * 避免干扰用户上传。
-       */
     }
   }
 
@@ -451,7 +540,11 @@ export default function App() {
           "vocabulary?select=*&order=created_at.desc"
         );
 
-      setVocabulary(data || []);
+      setVocabulary(
+        Array.isArray(data)
+          ? data
+          : []
+      );
     } catch (err) {
       console.error(
         "loadVocabulary:",
@@ -460,9 +553,9 @@ export default function App() {
     }
   }
 
-  /* =======================================================
-     Audio select
-  ======================================================= */
+  /* =====================================================
+     Audio
+  ===================================================== */
 
   function selectAudio(file) {
     if (!file) return;
@@ -470,73 +563,73 @@ export default function App() {
     setError("");
 
     if (
-      !file.type.startsWith("audio/")
+      !file.type.startsWith(
+        "audio/"
+      )
     ) {
       setError(
         "请选择 MP3、WAV、M4A 等音频文件。"
       );
-
       return;
     }
 
-    if (
-      audioUrl &&
-      audioUrl.startsWith("blob:")
-    ) {
-      URL.revokeObjectURL(audioUrl);
+    if (audioUrl) {
+      URL.revokeObjectURL(
+        audioUrl
+      );
     }
 
     const url =
       URL.createObjectURL(file);
 
     setAudioFile(file);
-
     setAudioUrl(url);
-
     setCurrentTime(0);
-
     setDuration(0);
-
-    setPlaying(false);
 
     notify("音频已加载");
   }
 
-  /* =======================================================
-     PDF select
-  ======================================================= */
+  /* =====================================================
+     PDF
+  ===================================================== */
 
   async function selectPdf(file) {
     if (!file) return;
 
     setLoading(true);
-
     setError("");
-
     setPdfWarning("");
 
     try {
       const rawText =
-        await extractPdfText(file);
+        await extractPdfText(
+          file
+        );
 
       const result =
-        cleanPdfTranscript(rawText);
-
-      setPdfFile(file);
-
-      setPdfText(result.text);
+        cleanPdfTranscript(
+          rawText
+        );
 
       const list =
-        splitSentences(result.text);
+        splitSentences(
+          result.text
+        );
+
+      setPdfFile(file);
+      setPdfText(result.text);
 
       setSentences(
-        list.map((text, index) => ({
-          index,
-          text,
-          start_time: null,
-          end_time: null,
-          asr_text: "",
-        }))
+        list.map(
+          (text, index) => ({
+            index,
+            text,
+            start_time: null,
+            end_time: null,
+            asr_text: "",
+          })
+        )
       );
 
       if (result.warning) {
@@ -564,12 +657,35 @@ export default function App() {
     }
   }
 
-  /* =======================================================
-     Create material
-  ======================================================= */
+  /* =====================================================
+     Create Material
+  ===================================================== */
 
   async function createMaterial() {
     setError("");
+
+    if (!SUPABASE_URL) {
+      setError(
+        "VITE_SUPABASE_URL 没有配置。"
+      );
+      return;
+    }
+
+    if (!SUPABASE_PUBLISHABLE_KEY) {
+      setError(
+        "VITE_SUPABASE_ANON_KEY 没有配置。"
+      );
+      return;
+    }
+
+    if (
+      !SUPABASE_LEGACY_ANON_KEY
+    ) {
+      setError(
+        "缺少 VITE_SUPABASE_LEGACY_ANON_KEY。请在 Supabase 的 Legacy API Keys 中复制 anon JWT。"
+      );
+      return;
+    }
 
     if (!materialName.trim()) {
       setError(
@@ -579,12 +695,16 @@ export default function App() {
     }
 
     if (!audioFile) {
-      setError("请先上传音频。");
+      setError(
+        "请先上传音频。"
+      );
       return;
     }
 
     if (!pdfFile) {
-      setError("请先上传 PDF 文稿。");
+      setError(
+        "请先上传 PDF 文稿。"
+      );
       return;
     }
 
@@ -606,9 +726,7 @@ export default function App() {
           pdfFile.name
         );
 
-      /*
-       * 1. 上传音频
-       */
+      /* 上传音频 */
 
       await uploadStorageFile(
         AUDIO_BUCKET,
@@ -616,9 +734,7 @@ export default function App() {
         audioFile
       );
 
-      /*
-       * 2. 上传 PDF
-       */
+      /* 上传 PDF */
 
       await uploadStorageFile(
         PDF_BUCKET,
@@ -626,41 +742,30 @@ export default function App() {
         pdfFile
       );
 
-      /*
-       * 3. 保存数据库
-       */
+      /* 保存数据库 */
 
       const data =
         await supabaseRequest(
           "materials",
           {
             method: "POST",
-
             headers: {
               Prefer:
                 "return=representation",
             },
-
             body: JSON.stringify({
               id: materialId,
-
               name:
                 materialName.trim(),
-
               audio_filename:
                 audioFile.name,
-
               pdf_filename:
                 pdfFile.name,
-
               transcript:
                 pdfText,
-
               segments:
                 sentences,
-
               current_segment: 0,
-
               progress: 0,
             }),
           }
@@ -671,22 +776,119 @@ export default function App() {
           ? data[0]
           : data;
 
-      /*
-       * 4. 更新本地列表
-       */
+      if (!material) {
+        throw new Error(
+          "材料数据库记录没有创建成功。"
+        );
+      }
 
-      setMaterials((items) => [
-        material,
-        ...items,
-      ]);
+      setMaterials(
+        (items) => [
+          material,
+          ...items,
+        ]
+      );
 
       setActiveMaterial(
         material
       );
 
-      /*
-       * 5. 使用 Public Storage URL
-       */
+      const savedAudioUrl =
+        publicStorageUrl(
+          AUDIO_BUCKET,
+          audioPath
+        );
+
+      if (audioUrl) {
+        URL.revokeObjectURL(
+          audioUrl
+        );
+      }
+
+      setAudioUrl(
+        savedAudioUrl
+      );
+
+      setAudioFile(null);
+      setPdfFile(null);
+
+      setPage("practice");
+
+      notify(
+        "学习材料已保存"
+      );
+    } catch (err) {
+      console.error(
+        "createMaterial:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "材料保存失败，请检查 Supabase Policies。"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /* =====================================================
+     Open Material
+  ===================================================== */
+
+  async function openMaterial(
+    material
+  ) {
+    try {
+      setError("");
+
+      setActiveMaterial(
+        material
+      );
+
+      const savedSentences =
+        Array.isArray(
+          material.segments
+        )
+          ? material.segments
+          : [];
+
+      setSentences(
+        savedSentences.map(
+          (item, index) => ({
+            ...item,
+            index,
+          })
+        )
+      );
+
+      setPdfText(
+        material.transcript ||
+          ""
+      );
+
+      setMaterialName(
+        material.name ||
+          ""
+      );
+
+      setCurrentSentence(
+        Number(
+          material.current_segment
+        ) || 0
+      );
+
+      if (audioUrl) {
+        URL.revokeObjectURL(
+          audioUrl
+        );
+      }
+
+      const audioPath =
+        storagePath(
+          material.id,
+          material.audio_filename
+        );
 
       const savedAudioUrl =
         publicStorageUrl(
@@ -698,114 +900,23 @@ export default function App() {
         savedAudioUrl
       );
 
-      setAudioFile(null);
-
-      setPdfFile(null);
-
       setPage("practice");
 
       notify(
-        "学习材料保存成功"
+        `已打开：${material.name}`
       );
     } catch (err) {
-      console.error(
-        "createMaterial:",
-        err
-      );
+      console.error(err);
 
       setError(
-        err?.message ||
-          "材料保存失败，请检查 Supabase Storage Policies。"
+        "打开材料失败。"
       );
-    } finally {
-      setLoading(false);
     }
   }
 
-  /* =======================================================
-     Open material
-  ======================================================= */
-
-  async function openMaterial(
-    material
-  ) {
-    setError("");
-
-    setActiveMaterial(
-      material
-    );
-
-    const savedSentences =
-      Array.isArray(
-        material.segments
-      )
-        ? material.segments
-        : [];
-
-    setSentences(
-      savedSentences.map(
-        (item, index) => ({
-          ...item,
-          index,
-        })
-      )
-    );
-
-    setPdfText(
-      material.transcript || ""
-    );
-
-    setMaterialName(
-      material.name || ""
-    );
-
-    setCurrentSentence(
-      Number(
-        material.current_segment
-      ) || 0
-    );
-
-    if (
-      audioUrl &&
-      audioUrl.startsWith("blob:")
-    ) {
-      URL.revokeObjectURL(
-        audioUrl
-      );
-    }
-
-    const savedAudioPath =
-      storagePath(
-        material.id,
-        material.audio_filename
-      );
-
-    const savedAudioUrl =
-      publicStorageUrl(
-        AUDIO_BUCKET,
-        savedAudioPath
-      );
-
-    setAudioUrl(
-      savedAudioUrl
-    );
-
-    setCurrentTime(0);
-
-    setDuration(0);
-
-    setPlaying(false);
-
-    setPage("practice");
-
-    notify(
-      `已打开：${material.name}`
-    );
-  }
-
-  /* =======================================================
-     Audio controls
-  ======================================================= */
+  /* =====================================================
+     Audio Controls
+  ===================================================== */
 
   function togglePlay() {
     const audio =
@@ -815,7 +926,6 @@ export default function App() {
       notify(
         "请先上传或打开音频"
       );
-
       return;
     }
 
@@ -824,12 +934,10 @@ export default function App() {
         .play()
         .catch((err) => {
           console.error(
-            "audio.play:",
             err
           );
-
-          setError(
-            "音频播放失败。请检查 Storage 是否为 PUBLIC，以及音频 URL 是否可以访问。"
+          notify(
+            "播放失败，请检查音频文件或 Storage 权限"
           );
         });
     } else {
@@ -843,35 +951,20 @@ export default function App() {
 
     if (!audio) return;
 
-    const start =
-      Number(
-        sentences[currentSentence]
-          ?.start_time
-      );
-
-    const end =
-      Number(
-        sentences[currentSentence]
-          ?.end_time
-      );
-
     if (
-      !Number.isFinite(start) ||
-      !Number.isFinite(end)
+      currentStart === null ||
+      currentEnd === null
     ) {
       notify(
         "这句话还没有时间轴，请先标记开始和结束。"
       );
-
       return;
     }
 
     audio.currentTime =
-      start;
+      currentStart;
 
-    audio
-      .play()
-      .catch(() => {});
+    audio.play().catch(() => {});
   }
 
   function handleTimeUpdate(
@@ -884,25 +977,16 @@ export default function App() {
       audio.currentTime
     );
 
-    const item =
-      sentences[currentSentence];
-
-    const start =
-      Number(item?.start_time);
-
-    const end =
-      Number(item?.end_time);
-
     if (
-      Number.isFinite(start) &&
-      Number.isFinite(end) &&
+      currentStart !== null &&
+      currentEnd !== null &&
       !audio.paused &&
-      audio.currentTime >= end
+      audio.currentTime >=
+        currentEnd
     ) {
       audio.pause();
-
       audio.currentTime =
-        end;
+        currentEnd;
     }
   }
 
@@ -916,11 +1000,9 @@ export default function App() {
     );
 
     setDictation("");
-
     setDictationChecked(
       false
     );
-
     setLookup(null);
   }
 
@@ -928,56 +1010,50 @@ export default function App() {
     setCurrentSentence(
       (value) =>
         Math.min(
-          Math.max(
-            0,
-            sentences.length - 1
-          ),
+          sentences.length - 1,
           value + 1
         )
     );
 
     setDictation("");
-
     setDictationChecked(
       false
     );
-
     setLookup(null);
   }
 
   function selectSentence(
     index
   ) {
-    setCurrentSentence(
-      index
-    );
+    setCurrentSentence(index);
 
     setDictation("");
-
     setDictationChecked(
       false
     );
-
     setLookup(null);
 
     const item =
       sentences[index];
 
-    const start =
-      Number(item?.start_time);
-
     if (
-      Number.isFinite(start) &&
+      Number.isFinite(
+        Number(
+          item?.start_time
+        )
+      ) &&
       audioRef.current
     ) {
       audioRef.current.currentTime =
-        start;
+        Number(
+          item.start_time
+        );
     }
   }
 
-  /* =======================================================
-     Save sentence timing
-  ======================================================= */
+  /* =====================================================
+     Sentence Timing
+  ===================================================== */
 
   async function saveSentenceSegments(
     nextSentences
@@ -991,49 +1067,48 @@ export default function App() {
         `materials?id=eq.${activeMaterial.id}`,
         {
           method: "PATCH",
-
           headers: {
             Prefer:
               "return=representation",
           },
-
           body: JSON.stringify({
             segments:
               nextSentences,
-
             current_segment:
               currentSentence,
           }),
         }
       );
 
-      const nextMaterial = {
-        ...activeMaterial,
-
-        segments:
-          nextSentences,
-
-        current_segment:
-          currentSentence,
-      };
+      const nextMaterial =
+        {
+          ...activeMaterial,
+          segments:
+            nextSentences,
+          current_segment:
+            currentSentence,
+        };
 
       setActiveMaterial(
         nextMaterial
       );
 
-      setMaterials((items) =>
-        items.map((item) =>
-          item.id ===
-          activeMaterial.id
-            ? nextMaterial
-            : item
-        )
+      setMaterials(
+        (items) =>
+          items.map(
+            (item) =>
+              item.id ===
+              activeMaterial.id
+                ? nextMaterial
+                : item
+          )
+      );
+
+      notify(
+        "时间轴已保存"
       );
     } catch (err) {
-      console.error(
-        "saveSentenceSegments:",
-        err
-      );
+      console.error(err);
 
       notify(
         "时间轴保存失败"
@@ -1042,7 +1117,9 @@ export default function App() {
   }
 
   function markSentenceStart() {
-    if (!audioRef.current) {
+    if (
+      !audioRef.current
+    ) {
       return;
     }
 
@@ -1057,7 +1134,6 @@ export default function App() {
           currentSentence
             ? {
                 ...item,
-
                 start_time:
                   Number(
                     time.toFixed(
@@ -1084,7 +1160,9 @@ export default function App() {
   }
 
   function markSentenceEnd() {
-    if (!audioRef.current) {
+    if (
+      !audioRef.current
+    ) {
       return;
     }
 
@@ -1097,19 +1175,21 @@ export default function App() {
         currentSentence
       ];
 
-    const start =
-      Number(
-        item?.start_time
-      );
-
     if (
-      Number.isFinite(start) &&
-      time <= start
+      item &&
+      Number.isFinite(
+        Number(
+          item.start_time
+        )
+      ) &&
+      time <=
+        Number(
+          item.start_time
+        )
     ) {
       notify(
         "结束时间必须晚于开始时间"
       );
-
       return;
     }
 
@@ -1120,7 +1200,6 @@ export default function App() {
           currentSentence
             ? {
                 ...item,
-
                 end_time:
                   Number(
                     time.toFixed(
@@ -1146,9 +1225,9 @@ export default function App() {
     );
   }
 
-  /* =======================================================
+  /* =====================================================
      Dictation
-  ======================================================= */
+  ===================================================== */
 
   function checkDictation() {
     setDictationChecked(
@@ -1156,35 +1235,17 @@ export default function App() {
     );
   }
 
-  const currentSentenceText =
-    sentences[
-      currentSentence
-    ]?.text || "";
-
-  const currentSentenceData =
-    sentences[
-      currentSentence
-    ] || null;
-
-  const currentStart =
-    Number(
-      currentSentenceData?.start_time
-    );
-
-  const currentEnd =
-    Number(
-      currentSentenceData?.end_time
-    );
-
   const dictationScore =
-    normalizeText(dictation) ===
+    normalizeText(
+      dictation
+    ) ===
     normalizeText(
       currentSentenceText
     );
 
-  /* =======================================================
-     Dictionary
-  ======================================================= */
+  /* =====================================================
+     Word Lookup
+  ===================================================== */
 
   async function lookupWord(
     rawWord
@@ -1199,21 +1260,14 @@ export default function App() {
       return;
     }
 
-    setLookupLoading(
-      true
-    );
+    setLookupLoading(true);
 
     setLookup({
       word,
-
       phonetic: "",
-
       partOfSpeech: "",
-
       definition: "",
-
       chineseMeaning: "",
-
       example:
         currentSentenceText,
     });
@@ -1249,15 +1303,19 @@ export default function App() {
       const meaning =
         entry?.meanings?.find(
           (item) =>
-            item.definitions?.length
+            item.definitions
+              ?.length
         );
 
       const definition =
-        meaning?.definitions?.[0]
-          ?.definition || "";
+        meaning
+          ?.definitions?.[0]
+          ?.definition ||
+        "";
 
       const partOfSpeech =
-        meaning?.partOfSpeech ||
+        meaning
+          ?.partOfSpeech ||
         "";
 
       let chineseMeaning =
@@ -1266,12 +1324,13 @@ export default function App() {
       if (definition) {
         try {
           const params =
-            new URLSearchParams({
-              q: definition,
-
-              langpair:
-                "en|zh-CN",
-            });
+            new URLSearchParams(
+              {
+                q: definition,
+                langpair:
+                  "en|zh-CN",
+              }
+            );
 
           const translationResponse =
             await fetch(
@@ -1292,7 +1351,6 @@ export default function App() {
           }
         } catch (err) {
           console.error(
-            "translation:",
             err
           );
         }
@@ -1300,36 +1358,25 @@ export default function App() {
 
       setLookup({
         word,
-
         phonetic,
-
         partOfSpeech,
-
         definition,
-
         chineseMeaning,
-
         example:
           currentSentenceText,
       });
     } catch (err) {
       console.error(
-        "lookup:",
         err
       );
 
       setLookup({
         word,
-
         phonetic: "",
-
         partOfSpeech: "",
-
         definition: "",
-
         chineseMeaning:
           "暂时无法查询这个单词。",
-
         example:
           currentSentenceText,
       });
@@ -1340,9 +1387,9 @@ export default function App() {
     }
   }
 
-  /* =======================================================
+  /* =====================================================
      Vocabulary
-  ======================================================= */
+  ===================================================== */
 
   async function saveVocabulary() {
     if (!lookup?.word) {
@@ -1360,7 +1407,6 @@ export default function App() {
       notify(
         "这个单词已经在生词本里"
       );
-
       return;
     }
 
@@ -1370,36 +1416,28 @@ export default function App() {
           "vocabulary",
           {
             method: "POST",
-
             headers: {
               Prefer:
                 "return=representation",
             },
-
             body: JSON.stringify({
               word:
                 lookup.word,
-
               phonetic:
                 lookup.phonetic ||
                 "",
-
               part_of_speech:
                 lookup.partOfSpeech ||
                 "",
-
               definition:
                 lookup.definition ||
                 "",
-
               chinese_meaning:
                 lookup.chineseMeaning ||
                 "",
-
               example_sentence:
                 lookup.example ||
                 "",
-
               material_id:
                 activeMaterial?.id ||
                 null,
@@ -1424,7 +1462,6 @@ export default function App() {
       );
     } catch (err) {
       console.error(
-        "saveVocabulary:",
         err
       );
 
@@ -1454,58 +1491,65 @@ export default function App() {
       );
     } catch (err) {
       console.error(
-        "deleteVocabulary:",
         err
+      );
+
+      notify(
+        "删除失败"
       );
     }
   }
 
-  /* =======================================================
-     Render words
-  ======================================================= */
+  /* =====================================================
+     Render Words
+  ===================================================== */
 
   function renderWords(text) {
     return String(text || "")
       .split(/(\s+)/)
-      .map((part, index) => {
-        if (/^\s+$/.test(part)) {
+      .map(
+        (part, index) => {
+          if (
+            /^\s+$/.test(part)
+          ) {
+            return (
+              <span key={index}>
+                {part}
+              </span>
+            );
+          }
+
+          const word =
+            cleanWord(part);
+
+          if (!word) {
+            return (
+              <span key={index}>
+                {part}
+              </span>
+            );
+          }
+
           return (
-            <span key={index}>
+            <button
+              key={index}
+              className="word"
+              onClick={(
+                event
+              ) => {
+                event.stopPropagation();
+
+                lookupWord(
+                  word
+                );
+              }}
+            >
               {part}
-            </span>
+            </button>
           );
         }
-
-        const word =
-          cleanWord(part);
-
-        if (!word) {
-          return (
-            <span key={index}>
-              {part}
-            </span>
-          );
-        }
-
-        return (
-          <button
-            key={index}
-            className="word"
-            onClick={(event) => {
-              event.stopPropagation();
-
-              lookupWord(word);
-            }}
-          >
-            {part}
-          </button>
-        );
-      });
+      );
   }
-
-  /* =======================================================
-     Progress
-  ======================================================= */
 
   const progress =
     duration > 0
@@ -1517,9 +1561,9 @@ export default function App() {
         )
       : 0;
 
-  /* =======================================================
+  /* =====================================================
      UI
-  ======================================================= */
+  ===================================================== */
 
   return (
     <div className="app">
@@ -1529,15 +1573,13 @@ export default function App() {
         </div>
       )}
 
-      {/* ===================================================
-          Header
-      =================================================== */}
-
       <header className="topbar">
         <button
           className="brand"
           onClick={() =>
-            setPage("library")
+            setPage(
+              "library"
+            )
           }
         >
           <span className="brand-logo">
@@ -1558,12 +1600,15 @@ export default function App() {
         <nav>
           <button
             className={
-              page === "library"
+              page ===
+              "library"
                 ? "active"
                 : ""
             }
             onClick={() =>
-              setPage("library")
+              setPage(
+                "library"
+              )
             }
           >
             我的听力
@@ -1571,12 +1616,15 @@ export default function App() {
 
           <button
             className={
-              page === "practice"
+              page ===
+              "practice"
                 ? "active"
                 : ""
             }
             onClick={() =>
-              setPage("practice")
+              setPage(
+                "practice"
+              )
             }
           >
             精听
@@ -1584,12 +1632,15 @@ export default function App() {
 
           <button
             className={
-              page === "dictation"
+              page ===
+              "dictation"
                 ? "active"
                 : ""
             }
             onClick={() =>
-              setPage("dictation")
+              setPage(
+                "dictation"
+              )
             }
           >
             听写
@@ -1597,12 +1648,15 @@ export default function App() {
 
           <button
             className={
-              page === "vocabulary"
+              page ===
+              "vocabulary"
                 ? "active"
                 : ""
             }
             onClick={() =>
-              setPage("vocabulary")
+              setPage(
+                "vocabulary"
+              )
             }
           >
             生词本
@@ -1610,17 +1664,14 @@ export default function App() {
         </nav>
       </header>
 
-      {/* ===================================================
-          Main
-      =================================================== */}
-
       <main className="container">
 
         {/* =================================================
             Library
         ================================================= */}
 
-        {page === "library" && (
+        {page ===
+          "library" && (
           <>
             <section className="hero">
               <span className="eyebrow">
@@ -1656,9 +1707,12 @@ export default function App() {
                 value={
                   materialName
                 }
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   setMaterialName(
-                    event.target.value
+                    event.target
+                      .value
                   )
                 }
                 placeholder="给这份材料起个名字，例如：BBC｜咖啡脱咖啡因"
@@ -1715,7 +1769,9 @@ export default function App() {
                 type="file"
                 accept="audio/*"
                 hidden
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   selectAudio(
                     event.target
                       .files?.[0]
@@ -1730,7 +1786,9 @@ export default function App() {
                 type="file"
                 accept=".pdf,application/pdf"
                 hidden
-                onChange={(event) =>
+                onChange={(
+                  event
+                ) =>
                   selectPdf(
                     event.target
                       .files?.[0]
@@ -1761,11 +1819,11 @@ export default function App() {
                 onClick={
                   createMaterial
                 }
-                disabled={loading}
+                disabled={
+                  loading
+                }
               >
-                {loading
-                  ? "正在保存……"
-                  : "保存到我的听力 →"}
+                保存到我的听力 →
               </button>
             </section>
 
@@ -1782,7 +1840,9 @@ export default function App() {
                 </div>
 
                 <span>
-                  {materials.length}{" "}
+                  {
+                    materials.length
+                  }{" "}
                   个材料
                 </span>
               </div>
@@ -1806,7 +1866,9 @@ export default function App() {
               ) : (
                 <div className="material-grid">
                   {materials.map(
-                    (material) => (
+                    (
+                      material
+                    ) => (
                       <button
                         key={
                           material.id
@@ -1858,8 +1920,10 @@ export default function App() {
             Practice / Dictation
         ================================================= */}
 
-        {(page === "practice" ||
-          page === "dictation") && (
+        {(page ===
+          "practice" ||
+          page ===
+            "dictation") && (
           <>
             <section className="workspace-head">
               <button
@@ -1895,24 +1959,26 @@ export default function App() {
                   setDuration(
                     event
                       .currentTarget
-                      .duration || 0
+                      .duration ||
+                      0
                   )
                 }
                 onTimeUpdate={
                   handleTimeUpdate
                 }
                 onPlay={() =>
-                  setPlaying(true)
+                  setPlaying(
+                    true
+                  )
                 }
                 onPause={() =>
-                  setPlaying(false)
+                  setPlaying(
+                    false
+                  )
                 }
                 onEnded={() =>
-                  setPlaying(false)
-                }
-                onError={() =>
-                  setError(
-                    "音频加载失败。请确认 listenly-audio 已设置为 PUBLIC。"
+                  setPlaying(
+                    false
                   )
                 }
               />
@@ -1930,7 +1996,9 @@ export default function App() {
                 </div>
 
                 <span>
-                  {sentences.length}{" "}
+                  {
+                    sentences.length
+                  }{" "}
                   句
                 </span>
               </div>
@@ -1954,7 +2022,8 @@ export default function App() {
                 type="range"
                 min="0"
                 max={
-                  duration || 0
+                  duration ||
+                  0
                 }
                 value={
                   currentTime
@@ -1963,7 +2032,9 @@ export default function App() {
                 style={{
                   "--progress": `${progress}%`,
                 }}
-                onChange={(event) => {
+                onChange={(
+                  event
+                ) => {
                   if (
                     audioRef.current
                   ) {
@@ -2018,7 +2089,9 @@ export default function App() {
 
                 <select
                   value={speed}
-                  onChange={(event) =>
+                  onChange={(
+                    event
+                  ) =>
                     setSpeed(
                       Number(
                         event
@@ -2053,12 +2126,10 @@ export default function App() {
                     1}
                 </strong>
 
-                {Number.isFinite(
-                  currentStart
-                ) &&
-                Number.isFinite(
-                  currentEnd
-                ) ? (
+                {currentStart !==
+                  null &&
+                currentEnd !==
+                  null ? (
                   <>
                     {" "}
                     已匹配{" "}
@@ -2107,6 +2178,19 @@ export default function App() {
                   ⏱ 标记本句结束
                 </button>
               </div>
+
+              <p
+                style={{
+                  marginTop:
+                    "12px",
+                  opacity:
+                    0.65,
+                  fontSize:
+                    "13px",
+                }}
+              >
+                第一次使用某份材料时，可以播放音频，在当前句开始的位置点击“标记开始”，到句子结束时点击“标记结束”。保存后即可精准重播。
+              </p>
             </section>
 
             <div className="practice-grid">
@@ -2194,6 +2278,11 @@ export default function App() {
                             Number(
                               item.start_time
                             )
+                          ) &&
+                          Number.isFinite(
+                            Number(
+                              item.end_time
+                            )
                           ) && (
                             <small
                               style={{
@@ -2230,8 +2319,7 @@ export default function App() {
                       </h3>
 
                       <p>
-                        先播放当前句，
-                        然后输入你听到的英文。
+                        先播放当前句，然后输入你听到的英文。
                       </p>
 
                       <textarea
@@ -2366,8 +2454,7 @@ export default function App() {
                     </h3>
 
                     <p>
-                      查看音标、词性、
-                      英文定义和中文释义。
+                      查看音标、词性、英文定义和中文释义。
                     </p>
                   </section>
                 )}
@@ -2390,9 +2477,14 @@ export default function App() {
                   </div>
 
                   {vocabulary
-                    .slice(0, 5)
+                    .slice(
+                      0,
+                      5
+                    )
                     .map(
-                      (item) => (
+                      (
+                        item
+                      ) => (
                         <div
                           className="mini-word"
                           key={
