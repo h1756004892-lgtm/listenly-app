@@ -7,11 +7,10 @@
     Inter,
     "PingFang SC",
     "Microsoft YaHei",
-    "Noto Sans SC",
     Arial,
     sans-serif;
 
-  color: #24302a;
+  color: #26322b;
   background: #f5f6f2;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -35,20 +34,84 @@ button {
   cursor: pointer;
 }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
 /* =========================
-   页面整体
+   页面
 ========================= */
 
 .app {
-  width: 100%;
   min-height: 100vh;
-  padding: 32px 5vw 60px;
+  padding: 30px 5vw 50px;
 }
+
+/* =========================
+   顶部
+========================= */
+
+.header {
+  max-width: 1180px;
+  margin: 0 auto 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: #26322b;
+  padding: 0;
+}
+
+.logo small {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: #849087;
+  font-weight: 700;
+}
+
+.logo h1 {
+  margin: 0;
+  font-size: 25px;
+  letter-spacing: 0.04em;
+}
+
+.logo h1 span {
+  font-size: 14px;
+  margin-left: 7px;
+  color: #7b857e;
+  font-weight: 500;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.nav button {
+  border: 0;
+  background: transparent;
+  color: #7b857e;
+  padding: 8px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.nav button:hover {
+  color: #26322b;
+}
+
+.nav button.active {
+  color: #26322b;
+  font-weight: 650;
+  border-bottom-color: #26322b;
+}
+
+/* =========================
+   内容容器
+========================= */
 
 .container {
   max-width: 1180px;
@@ -56,87 +119,42 @@ button:disabled {
 }
 
 /* =========================
-   顶部导航
-========================= */
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 46px;
-}
-
-.logo {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.logo small {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  color: #7b857e;
-}
-
-.logo h1 {
-  margin: 0;
-  font-size: 25px;
-  letter-spacing: -0.03em;
-}
-
-.nav {
-  display: flex;
-  gap: 28px;
-}
-
-.nav button {
-  border: 0;
-  background: transparent;
-  color: #7a827d;
-  padding: 6px 0;
-}
-
-.nav button.active {
-  color: #24302a;
-  font-weight: 600;
-}
-
-/* =========================
-   首页标题
+   Hero
 ========================= */
 
 .hero {
   text-align: center;
-  margin-bottom: 42px;
+  padding: 35px 20px 48px;
 }
 
 .hero-eyebrow {
-  margin-bottom: 12px;
   font-size: 11px;
+  letter-spacing: 0.22em;
   font-weight: 700;
-  letter-spacing: 0.2em;
-  color: #87928b;
+  color: #829087;
 }
 
 .hero h2 {
-  margin: 0;
-  font-size: clamp(42px, 6vw, 76px);
-  line-height: 0.98;
+  margin: 17px 0 20px;
+  font-size: clamp(46px, 6vw, 76px);
+  line-height: 1;
   letter-spacing: -0.055em;
   color: #26322b;
 }
 
 .hero h2 span {
+  font-family: Georgia, serif;
   font-weight: 400;
   font-style: italic;
+  color: #607269;
 }
 
 .hero p {
-  max-width: 560px;
-  margin: 22px auto 0;
-  color: #7b857e;
-  line-height: 1.7;
+  max-width: 570px;
+  margin: 0 auto;
+  color: #7d8881;
+  font-size: 16px;
+  line-height: 1.8;
 }
 
 /* =========================
@@ -144,35 +162,34 @@ button:disabled {
 ========================= */
 
 .card {
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid #e2e6df;
+  background: #ffffff;
+  border: 1px solid #e0e5df;
   border-radius: 24px;
-  box-shadow: 0 10px 35px rgba(38, 50, 43, 0.04);
+  box-shadow: 0 12px 40px rgba(40, 52, 44, 0.045);
 }
 
 /* =========================
-   上传区域
+   上传
 ========================= */
 
 .upload-card {
-  padding: 48px;
+  padding: 30px;
 }
 
 .upload-zone {
-  border: 1.5px dashed #bfc9c1;
-  border-radius: 20px;
-  min-height: 260px;
+  min-height: 300px;
   display: flex;
   align-items: center;
   justify-content: center;
-  text-align: center;
+  border: 1.5px dashed #bcc8bf;
+  border-radius: 20px;
   background: #fafbf8;
   transition: 0.2s ease;
 }
 
 .upload-zone:hover {
-  border-color: #30483b;
-  background: #f7f9f5;
+  background: #f5f8f4;
+  border-color: #718276;
 }
 
 .upload-zone input {
@@ -180,49 +197,52 @@ button:disabled {
 }
 
 .upload-content {
-  max-width: 480px;
+  text-align: center;
 }
 
 .upload-icon {
-  width: 58px;
-  height: 58px;
-  margin: 0 auto 20px;
-  border-radius: 50%;
-  background: #dfe8df;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 18px;
+  border-radius: 18px;
+  background: #e8eee7;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 25px;
+  font-size: 28px;
+  color: #53675a;
 }
 
 .upload-content h3 {
-  margin: 0 0 10px;
+  margin: 0 0 9px;
   font-size: 21px;
 }
 
 .upload-content p {
   margin: 0;
-  color: #8a938d;
-  line-height: 1.7;
+  color: #8b958e;
 }
 
 .upload-button {
   display: inline-flex;
-  margin-top: 24px;
-  padding: 12px 22px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 22px;
+  padding: 12px 21px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 11px;
   background: #26352d;
-  color: white;
+  color: #ffffff;
+  font-weight: 600;
 }
 
 /* =========================
-   文稿上传
+   文稿
 ========================= */
 
 .document-card {
-  margin-top: 20px;
-  padding: 28px 32px;
+  margin-top: 18px;
+  padding: 25px 28px;
 }
 
 .document-header {
@@ -239,208 +259,150 @@ button:disabled {
 
 .document-header p {
   margin: 7px 0 0;
-  color: #8a938d;
-  font-size: 14px;
+  color: #89938d;
+  font-size: 13px;
 }
 
 .document-button {
-  border: 1px solid #d8ded8;
-  background: white;
+  display: inline-flex;
+  align-items: center;
   padding: 10px 16px;
+  border: 1px solid #d9dfd8;
   border-radius: 10px;
+  background: #ffffff;
+  color: #3d4a42;
+  cursor: pointer;
 }
 
 .document-name {
-  margin-top: 20px;
+  margin-top: 18px;
   padding: 14px 16px;
-  border-radius: 12px;
-  background: #f2f4ef;
-  color: #536058;
+  border-radius: 11px;
+  background: #f0f4ef;
+  color: #536158;
 }
 
 /* =========================
-   音频播放器
+   提示
+========================= */
+
+.notice {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 100;
+  padding: 13px 18px;
+  border-radius: 11px;
+  background: #26352d;
+  color: #ffffff;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+}
+
+/* =========================
+   播放器
 ========================= */
 
 .player-card {
-  margin-top: 30px;
-  padding: 30px;
+  padding: 28px 30px;
 }
 
 .audio-title {
-  margin: 0 0 20px;
-  font-size: 20px;
+  margin-bottom: 18px;
+  font-size: 18px;
   font-weight: 650;
+}
+
+.time-row {
+  display: flex;
+  justify-content: space-between;
+  color: #8a948d;
+  font-size: 12px;
+}
+
+.progress {
+  width: 100%;
+  margin: 12px 0 18px;
+  appearance: none;
+  height: 5px;
+  border-radius: 20px;
+  background: #dfe5df;
+  accent-color: #26352d;
 }
 
 .audio-controls {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: center;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
 .play-button {
   width: 52px;
   height: 52px;
+  padding: 0;
   border: 0;
   border-radius: 50%;
   background: #26352d;
-  color: white;
-  font-size: 18px;
+  color: #ffffff;
+  font-size: 17px;
 }
 
 .secondary-button {
-  padding: 12px 18px;
-  border-radius: 12px;
+  padding: 10px 16px;
   border: 1px solid #d9dfd8;
-  background: white;
-  color: #344139;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #39473f;
 }
 
 .speed-select {
-  padding: 11px 14px;
+  padding: 10px 13px;
   border: 1px solid #d9dfd8;
-  border-radius: 12px;
-  background: white;
-}
-
-.progress {
-  width: 100%;
-  height: 6px;
-  margin: 22px 0 4px;
-  appearance: none;
-}
-
-.progress::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 10px;
-  background: #dce2dc;
-}
-
-.progress::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -5px;
-  border-radius: 50%;
-  background: #26352d;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #39473f;
 }
 
 /* =========================
-   精听区域
+   精听布局
 ========================= */
 
 .practice-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
-  gap: 24px;
-  margin-top: 24px;
+  gap: 20px;
+  margin-top: 20px;
 }
 
 .practice-card {
-  padding: 34px;
+  padding: 28px;
 }
+
+/* =========================
+   模式切换
+========================= */
 
 .mode-tabs {
   display: inline-flex;
-  padding: 5px;
-  background: #edf0eb;
-  border-radius: 14px;
-  margin-bottom: 32px;
+  padding: 4px;
+  background: #edf1ec;
+  border-radius: 11px;
 }
 
 .mode-tabs button {
+  padding: 9px 18px;
   border: 0;
+  border-radius: 8px;
   background: transparent;
-  padding: 10px 18px;
-  border-radius: 10px;
   color: #7b857e;
 }
 
 .mode-tabs button.active {
-  background: white;
+  background: #ffffff;
   color: #26322b;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
-
-.sentence {
-  min-height: 220px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 35px;
-}
-
-.sentence-text {
-  font-size: clamp(25px, 3vw, 38px);
-  line-height: 1.45;
-  font-weight: 600;
-  color: #29352e;
-}
-
-.sentence-word {
-  cursor: pointer;
-  border-bottom: 2px solid #c8d4c8;
-  transition: 0.15s;
-}
-
-.sentence-word:hover {
-  color: #55715d;
-  border-bottom-color: #55715d;
-}
-
-.sentence-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-/* =========================
-   听写
-========================= */
-
-.dictation {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.dictation textarea {
-  width: 100%;
-  min-height: 150px;
-  resize: vertical;
-  padding: 18px;
-  border: 1px solid #dce2dc;
-  border-radius: 15px;
-  outline: none;
-  background: #fbfcfa;
-  color: #26322b;
-  line-height: 1.7;
-}
-
-.dictation textarea:focus {
-  border-color: #879c8c;
-  box-shadow: 0 0 0 3px rgba(135, 156, 140, 0.12);
-}
-
-.check-button {
-  align-self: flex-start;
-  border: 0;
-  border-radius: 12px;
-  padding: 12px 22px;
-  background: #26352d;
-  color: white;
-}
-
-.answer-result {
-  padding: 16px;
-  border-radius: 14px;
-  background: #f1f5ef;
-  line-height: 1.7;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 /* =========================
@@ -448,25 +410,140 @@ button:disabled {
 ========================= */
 
 .sentence-list {
-  margin-top: 28px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 7px;
+  margin-top: 25px;
+  max-height: 290px;
+  overflow-y: auto;
 }
 
 .sentence-item {
-  padding: 14px 16px;
+  width: 100%;
+  padding: 12px 14px;
   border: 1px solid #e4e8e3;
-  border-radius: 12px;
-  background: white;
-  color: #59645d;
-  cursor: pointer;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #657068;
+  text-align: left;
+  line-height: 1.55;
+}
+
+.sentence-item:hover {
+  background: #f8faf7;
 }
 
 .sentence-item.active {
-  border-color: #aebdaf;
-  background: #f0f4ee;
+  border-color: #b6c5b9;
+  background: #eef3ed;
   color: #26352d;
+}
+
+/* =========================
+   当前句
+========================= */
+
+.sentence {
+  min-height: 220px;
+  padding: 35px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.sentence-text {
+  font-size: clamp(25px, 3vw, 38px);
+  line-height: 1.5;
+  font-weight: 600;
+  color: #29362f;
+}
+
+.sentence-text.hidden {
+  color: #9ba49e;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.sentence-word {
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 1px dashed #9baa9f;
+  background: transparent;
+  color: #29362f;
+}
+
+.sentence-word:hover {
+  color: #55705d;
+  border-bottom-color: #55705d;
+}
+
+.sentence-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* =========================
+   听写
+========================= */
+
+.dictation {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 17px;
+  text-align: left;
+}
+
+.dictation .hint {
+  color: #7e8982;
+  line-height: 1.7;
+}
+
+.big-play {
+  align-self: flex-start;
+  padding: 12px 19px;
+  border: 0;
+  border-radius: 11px;
+  background: #26352d;
+  color: white;
+}
+
+.dictation textarea {
+  width: 100%;
+  min-height: 145px;
+  padding: 17px;
+  border: 1px solid #dce2dc;
+  border-radius: 13px;
+  outline: none;
+  resize: vertical;
+  background: #fafbf9;
+  color: #26322b;
+  line-height: 1.7;
+}
+
+.dictation textarea:focus {
+  border-color: #92a396;
+}
+
+.check-button {
+  align-self: flex-start;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 11px;
+  background: #26352d;
+  color: #ffffff;
+}
+
+.answer-result {
+  padding: 15px 17px;
+  border-radius: 12px;
+  background: #f0f4ef;
+  color: #4f6055;
+  line-height: 1.7;
 }
 
 /* =========================
@@ -474,34 +551,45 @@ button:disabled {
 ========================= */
 
 .vocabulary-card {
-  padding: 28px;
+  padding: 27px;
 }
 
 .vocabulary-card h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.2em;
-  color: #829087;
+  color: #839087;
 }
 
 .vocabulary-list {
-  margin-top: 20px;
+  margin-top: 18px;
 }
 
 .vocabulary-item {
-  padding: 18px 0;
+  padding: 17px 0;
   border-bottom: 1px solid #e7ebe5;
 }
 
+.vocabulary-item:last-child {
+  border-bottom: 0;
+}
+
 .vocabulary-word {
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 19px;
+  font-weight: 650;
 }
 
 .vocabulary-meaning {
   margin-top: 6px;
-  color: #8a938d;
+  color: #7e8982;
+  line-height: 1.6;
   font-size: 14px;
+}
+
+.vocabulary-item small {
+  display: block;
+  margin-top: 7px;
+  color: #9aa39d;
   line-height: 1.6;
 }
 
@@ -512,43 +600,51 @@ button:disabled {
 }
 
 .word-actions button {
-  border: 0;
-  background: #eef2ed;
-  border-radius: 8px;
   padding: 6px 10px;
-  color: #59665d;
+  border: 0;
+  border-radius: 8px;
+  background: #edf1ec;
+  color: #58655d;
+}
+
+.word-empty {
+  padding: 35px 5px;
+  color: #929b95;
+  line-height: 1.8;
+  text-align: center;
 }
 
 .empty-vocabulary {
-  margin-top: 25px;
-  color: #9aa39d;
-  line-height: 1.7;
+  padding: 50px 20px;
+  text-align: center;
+  color: #929b95;
+  line-height: 1.8;
 }
 
 /* =========================
-   查词弹窗
+   查词浮层
 ========================= */
 
 .dictionary-panel {
   position: fixed;
-  right: 30px;
-  bottom: 30px;
-  width: min(380px, calc(100vw - 40px));
-  padding: 24px;
-  border: 1px solid #dfe4dd;
+  right: 25px;
+  bottom: 25px;
+  width: min(390px, calc(100vw - 40px));
+  padding: 25px;
+  border: 1px solid #dfe4de;
   border-radius: 20px;
-  background: white;
+  background: #ffffff;
   box-shadow: 0 20px 60px rgba(35, 47, 40, 0.15);
-  z-index: 100;
+  z-index: 200;
 }
 
 .dictionary-panel h3 {
   margin: 0;
-  font-size: 25px;
+  font-size: 27px;
 }
 
 .dictionary-panel p {
-  color: #68736b;
+  color: #68736c;
   line-height: 1.7;
 }
 
@@ -556,36 +652,52 @@ button:disabled {
   float: right;
   border: 0;
   background: transparent;
-  font-size: 20px;
+  font-size: 22px;
+  color: #77827b;
 }
 
 /* =========================
-   响应式
+   底部
+========================= */
+
+footer {
+  max-width: 1180px;
+  margin: 70px auto 0;
+  padding-top: 25px;
+  border-top: 1px solid #e1e5df;
+  text-align: center;
+  color: #9aa39d;
+  font-size: 12px;
+}
+
+/* =========================
+   移动端
 ========================= */
 
 @media (max-width: 850px) {
   .app {
-    padding: 24px 18px 45px;
+    padding: 22px 18px 40px;
   }
 
   .header {
-    margin-bottom: 32px;
+    margin-bottom: 30px;
   }
 
   .nav {
-    gap: 14px;
+    gap: 15px;
   }
 
   .practice-layout {
     grid-template-columns: 1fr;
   }
 
-  .upload-card {
-    padding: 25px;
+  .hero {
+    padding-top: 20px;
   }
 
+  .upload-card,
   .practice-card {
-    padding: 24px;
+    padding: 22px;
   }
 }
 
@@ -593,7 +705,12 @@ button:disabled {
   .header {
     align-items: flex-start;
     flex-direction: column;
-    gap: 16px;
+    gap: 18px;
+  }
+
+  .nav {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .hero h2 {
@@ -607,7 +724,7 @@ button:disabled {
 
   .sentence {
     min-height: 180px;
-    padding: 20px;
+    padding: 20px 5px;
   }
 
   .sentence-text {
@@ -615,6 +732,13 @@ button:disabled {
   }
 
   .player-card {
-    padding: 22px;
+    padding: 21px;
+  }
+
+  .notice {
+    left: 18px;
+    right: 18px;
+    top: 18px;
+    text-align: center;
   }
 }
