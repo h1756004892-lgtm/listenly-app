@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createClient } from "@supabase/supabase-js";
 import "./style.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -7,579 +8,1739 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-const STORAGE_KEY = "listenly-vocab-v3";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+const supabase =
+  SUPABASE_URL && SUPABASE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_KEY)
+    : null;
+
+const AUDIO_BUCKET = "listenly-audio";
+const PDF_BUCKET = "listenly-pdf";
+
+const DICT_API =
+  "https://api.dictionaryapi.dev/api/v2/entries/en/";
+
+const TRANSLATE_API =
+  "https://api.mymemory.translated.net/get";
 
 function splitSentences(text) {
   return text
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
     .split(/(?<=[.!?。！？])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 1);
+    .map((item) => item.trim())
+    .filter((item) => item.length > 1);
+}
+
+function normalizeText(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9'\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanWord(word) {
+  return word
+    .toLowerCase()
+    .replace(/^[^a-z'-]+|[^a-z'-]+$/gi, "");
 }
 
 function formatTime(seconds) {
   if (!Number.isFinite(seconds)) return "00:00";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+
+  const total = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(total / 60);
+  const secondsPart = total % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(
+    secondsPart
+  ).padStart(2, "0")}`;
 }
 
-function cleanWord(word) {
-  return word.toLowerCase().replace(/^[^a-z'-]+|[^a-z'-]+$/gi, "");
+function similarity(a, b) {
+  const aa = new Set(normalizeText(a).split(" ").filter(Boolean));
+  const bb = new Set(normalizeText(b).split(" ").filter(Boolean));
+
+  if (!aa.size || !bb.size) return 0;
+
+  let same = 0;
+
+  aa.forEach((word) => {
+    if (bb.has(word)) same++;
+  });
+
+  return same / Math.max(aa.size, bb.size);
 }
 
 export default function App() {
   const audioRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const audioInputRef = useRef(null);
   const pdfInputRef = useRef(null);
+
+  const [page, setPage] = useState("library");
+
+  const [materials, setMaterials] = useState([]);
+  const [activeMaterial, setActiveMaterial] = useState(null);
+
+  const [materialName, setMaterialName] = useState("");
 
   const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState("");
+
   const [pdfFile, setPdfFile] = useState(null);
-  const [documentText, setDocumentText] = useState("");
+  const [pdfText, setPdfText] = useState("");
+
   const [sentences, setSentences] = useState([]);
+
   const [currentSentence, setCurrentSentence] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+
   const [playing, setPlaying] = useState(false);
-  const [mode, setMode] = useState("精听");
-  const [showAnswer, setShowAnswer] = useState(true);
-  const [loadingPdf, setLoadingPdf] = useState(false);
-  const [message, setMessage] = useState("");
-  const [vocab, setVocab] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    } catch {
-      return [];
-    }
-  });
+
+  const [currentTime, setCurrentTime] = useState(0);
+
+  const [duration, setDuration] = useState(0);
+
+  const [speed, setSpeed] = useState(1);
+
+  const [dictation, setDictation] = useState("");
+
+  const [dictationChecked, setDictationChecked] =
+    useState(false);
+
   const [lookup, setLookup] = useState(null);
-  const [lookupLoading, setLookupLoading] = useState(false);
+
+  const [lookupLoading, setLookupLoading] =
+    useState(false);
+
+  const [vocabulary, setVocabulary] =
+    useState([]);
+
+  const [loading, setLoading] = useState(false);
+
+  const [message, setMessage] = useState("");
+
+  const [error, setError] = useState("");
+
+  const currentSentenceText =
+    sentences[currentSentence]?.text || "";
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(vocab));
-  }, [vocab]);
+    loadMaterials();
+    loadVocabulary();
+  }, []);
+
+  useEffect(() => {
+    if (!audioRef.current) return;
+
+    audioRef.current.playbackRate = speed;
+  }, [speed]);
 
   useEffect(() => {
     return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
     };
   }, [audioUrl]);
 
-  const progress = duration ? Math.min(100, (currentTime / duration) * 100) : 0;
+  async function loadMaterials() {
+    if (!supabase) return;
 
-  const currentSentenceText = sentences[currentSentence] || "";
+    const { data, error } = await supabase
+      .from("materials")
+      .select("*")
+      .order("created_at", {
+        ascending: false,
+      });
 
-  const estimatedStart = useMemo(() => {
-    if (!duration || !sentences.length) return 0;
-    const totalChars = sentences.reduce((n, s) => n + s.length, 0) || 1;
-    const before = sentences.slice(0, currentSentence).reduce((n, s) => n + s.length, 0);
-    return duration * (before / totalChars);
-  }, [duration, sentences, currentSentence]);
-
-  const estimatedEnd = useMemo(() => {
-    if (!duration || !sentences.length) return 0;
-    const totalChars = sentences.reduce((n, s) => n + s.length, 0) || 1;
-    const before = sentences.slice(0, currentSentence + 1).reduce((n, s) => n + s.length, 0);
-    return duration * (before / totalChars);
-  }, [duration, sentences, currentSentence]);
-
-  function handleAudio(file) {
-    if (!file) return;
-    if (!file.type.startsWith("audio/")) {
-      setMessage("请选择 MP3、WAV、M4A 等音频文件。");
+    if (error) {
+      console.error(error);
       return;
     }
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
-    const url = URL.createObjectURL(file);
-    setAudioFile(file);
-    setAudioUrl(url);
-    setCurrentTime(0);
-    setCurrentSentence(0);
-    setMessage("音频已加载，可以开始精听。");
+
+    setMaterials(data || []);
   }
 
-  async function handlePdf(file) {
-    if (!file) return;
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setMessage("请选择 PDF 文稿。");
+  async function loadVocabulary() {
+    if (!supabase) return;
+
+    const { data, error } = await supabase
+      .from("vocabulary")
+      .select("*")
+      .order("created_at", {
+        ascending: false,
+      });
+
+    if (error) {
+      console.error(error);
       return;
     }
 
-    setLoadingPdf(true);
-    setMessage("正在读取 PDF 文稿……");
+    setVocabulary(data || []);
+  }
+
+  function notify(text) {
+    setMessage(text);
+
+    setTimeout(() => {
+      setMessage("");
+    }, 3000);
+  }
+
+  async function extractPdf(file) {
     setPdfFile(file);
+
+    setLoading(true);
+    setError("");
 
     try {
       const buffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-      let fullText = "";
 
-      for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
-        const page = await pdf.getPage(pageNo);
-        const content = await page.getTextContent();
-        const pageText = content.items
+      const pdf =
+        await pdfjsLib.getDocument({
+          data: buffer,
+        }).promise;
+
+      let pages = [];
+
+      for (
+        let pageNumber = 1;
+        pageNumber <= pdf.numPages;
+        pageNumber++
+      ) {
+        const page =
+          await pdf.getPage(pageNumber);
+
+        const content =
+          await page.getTextContent();
+
+        const text = content.items
           .map((item) => item.str || "")
           .join(" ")
           .replace(/\s+/g, " ")
           .trim();
 
-        if (pageText) fullText += pageText + "\n";
+        pages.push(text);
       }
 
-      const nextSentences = splitSentences(fullText);
+      const fullText = pages.join("\n");
 
-      if (!nextSentences.length) {
-        setDocumentText("");
-        setSentences([]);
-        setMessage("这个 PDF 没有检测到可复制的文字。它可能是扫描图片，需要 OCR 版本。");
-      } else {
-        setDocumentText(fullText);
-        setSentences(nextSentences);
-        setCurrentSentence(0);
-        setMessage(`PDF 已读取：${pdf.numPages} 页，共 ${nextSentences.length} 句。`);
+      /*
+       * 很多 BBC Learning English PDF
+       * 的结构是：
+       *
+       * Questions
+       * Answers
+       * Vocabulary
+       * Transcript
+       *
+       * 所以优先截取 Transcript 后面的内容。
+       */
+
+      const transcriptIndex =
+        fullText.toLowerCase().lastIndexOf(
+          "transcript"
+        );
+
+      let transcript = fullText;
+
+      if (transcriptIndex >= 0) {
+        transcript = fullText
+          .slice(transcriptIndex + 10)
+          .trim();
       }
-    } catch (error) {
-      console.error(error);
-      setMessage("PDF 读取失败，请确认文件没有损坏。");
+
+      /*
+       * 去掉 PDF 页脚
+       */
+      transcript = transcript
+        .replace(
+          /The Listening Room ©British Broadcasting Corporation 2026/gi,
+          ""
+        )
+        .replace(
+          /bbclearningenglish\.com/gi,
+          ""
+        )
+        .replace(
+          /Page \d+ of \d+/gi,
+          ""
+        )
+        .trim();
+
+      const list =
+        splitSentences(transcript);
+
+      setPdfText(transcript);
+
+      setSentences(
+        list.map((text, index) => ({
+          index,
+          text,
+          start_time: null,
+          end_time: null,
+          asr_text: "",
+        }))
+      );
+
+      notify(
+        `PDF 读取完成，共 ${list.length} 句`
+      );
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        "PDF 读取失败，请确认 PDF 是正常文件。"
+      );
     } finally {
-      setLoadingPdf(false);
+      setLoading(false);
     }
+  }
+
+  function selectAudio(file) {
+    if (!file) return;
+
+    if (!file.type.startsWith("audio/")) {
+      setError(
+        "请选择 MP3、WAV、M4A 等音频文件。"
+      );
+      return;
+    }
+
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+
+    const url =
+      URL.createObjectURL(file);
+
+    setAudioFile(file);
+    setAudioUrl(url);
+
+    notify("音频已加载");
+  }
+
+  /*
+   * 重要：
+   * 这里故意不自动播放。
+   *
+   * 用户按播放：
+   *     播放
+   *
+   * 用户按暂停：
+   *     停止
+   *
+   * 用户再按播放：
+   *     从暂停位置继续
+   *
+   * 不会自动跳下一句。
+   */
+
+  async function playAudio() {
+    if (!audioRef.current) {
+      notify("请先上传音频");
+      return;
+    }
+
+    try {
+      await audioRef.current.play();
+    } catch (err) {
+      console.error(err);
+      notify("播放失败");
+    }
+  }
+
+  function pauseAudio() {
+    if (!audioRef.current) return;
+
+    audioRef.current.pause();
   }
 
   function togglePlay() {
-    if (!audioRef.current) return;
-    if (playing) {
-      audioRef.current.pause();
+    if (!audioRef.current) {
+      notify("请先上传音频");
+      return;
+    }
+
+    if (audioRef.current.paused) {
+      playAudio();
     } else {
-      audioRef.current.play().catch(() => {});
+      pauseAudio();
     }
   }
 
-  function replaySentence() {
-    if (!audioRef.current || !duration || !sentences.length) {
-      setMessage("请先上传音频和 PDF 文稿。");
+  /*
+   * 当前版本：
+   * 如果已有真实 start_time/end_time，
+   * 就严格按照真实时间播放。
+   *
+   * 没有时间戳时暂时不假装精准匹配。
+   */
+
+  function getSentenceRange(index) {
+    const item = sentences[index];
+
+    if (
+      item &&
+      Number.isFinite(item.start_time) &&
+      Number.isFinite(item.end_time)
+    ) {
+      return {
+        start: item.start_time,
+        end: item.end_time,
+      };
+    }
+
+    return null;
+  }
+
+  function replayCurrentSentence() {
+    const range =
+      getSentenceRange(
+        currentSentence
+      );
+
+    if (!audioRef.current) {
+      notify("请先上传音频");
       return;
     }
-    audioRef.current.currentTime = estimatedStart;
+
+    if (!range) {
+      notify(
+        "当前句还没有真实音频时间戳，请完成音频匹配后再使用逐句播放。"
+      );
+      return;
+    }
+
+    audioRef.current.currentTime =
+      range.start;
+
     audioRef.current.play().catch(() => {});
+  }
+
+  function goNextSentence() {
+    setCurrentSentence((value) =>
+      Math.min(
+        sentences.length - 1,
+        value + 1
+      )
+    );
+
+    setDictation("");
+    setDictationChecked(false);
+  }
+
+  function goPreviousSentence() {
+    setCurrentSentence((value) =>
+      Math.max(0, value - 1)
+    );
+
+    setDictation("");
+    setDictationChecked(false);
+  }
+
+  /*
+   * 如果有真实时间戳：
+   * 播放到这一句结束时自动暂停。
+   *
+   * 但不会自动进入下一句。
+   */
+
+  function handleTimeUpdate() {
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    setCurrentTime(
+      audio.currentTime
+    );
+
+    const range =
+      getSentenceRange(
+        currentSentence
+      );
+
+    if (
+      range &&
+      !audio.paused &&
+      audio.currentTime >= range.end
+    ) {
+      audio.pause();
+
+      audio.currentTime =
+        range.end;
+    }
+  }
+
+  function handleLoadedMetadata(event) {
+    setDuration(
+      event.currentTarget.duration || 0
+    );
+  }
+
+  function handlePlay() {
     setPlaying(true);
   }
 
-  function nextSentence() {
-    setCurrentSentence((i) => Math.min(sentences.length - 1, i + 1));
-    setShowAnswer(mode !== "听写");
-  }
-
-  function prevSentence() {
-    setCurrentSentence((i) => Math.max(0, i - 1));
-  }
-
-  function seekTo(value) {
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = Number(value);
+  function handlePause() {
+    setPlaying(false);
   }
 
   async function lookupWord(rawWord) {
-    const word = cleanWord(rawWord);
-    if (!word || word.length < 2) return;
+    const word =
+      cleanWord(rawWord);
+
+    if (!word || word.length < 2) {
+      return;
+    }
 
     setLookupLoading(true);
-    setLookup({ word });
+
+    setLookup({
+      word,
+      phonetic: "",
+      partOfSpeech: "",
+      definition: "",
+      chineseMeaning: "",
+      example: currentSentenceText,
+    });
 
     try {
-      const [dictRes, transRes] = await Promise.all([
-        fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`),
-        fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
+      const response =
+        await fetch(
+          `${DICT_API}${encodeURIComponent(
             word
-          )}&langpair=en|zh-CN`
-        ),
-      ]);
+          )}`
+        );
 
-      let definition = "";
-      let phonetic = "";
-      let translation = "";
-
-      if (dictRes.ok) {
-        const data = await dictRes.json();
-        const entry = data?.[0];
-        phonetic =
-          entry?.phonetic ||
-          entry?.phonetics?.find((p) => p.text)?.text ||
-          "";
-        definition =
-          entry?.meanings?.[0]?.definitions?.[0]?.definition || "";
+      if (!response.ok) {
+        throw new Error(
+          "dictionary failed"
+        );
       }
 
-      if (transRes.ok) {
-        const data = await transRes.json();
-        translation = data?.responseData?.translatedText || "";
+      const data =
+        await response.json();
+
+      const entry = data?.[0];
+
+      const phonetic =
+        entry?.phonetic ||
+        entry?.phonetics?.find(
+          (item) => item.text
+        )?.text ||
+        "";
+
+      const meaning =
+        entry?.meanings?.find(
+          (item) =>
+            item.definitions?.length
+        );
+
+      const definition =
+        meaning?.definitions?.[0]
+          ?.definition || "";
+
+      const partOfSpeech =
+        meaning?.partOfSpeech || "";
+
+      let chineseMeaning = "";
+
+      try {
+        const params =
+          new URLSearchParams({
+            q: definition || word,
+            langpair: "en|zh-CN",
+          });
+
+        const translationResponse =
+          await fetch(
+            `${TRANSLATE_API}?${params.toString()}`
+          );
+
+        if (
+          translationResponse.ok
+        ) {
+          const translation =
+            await translationResponse.json();
+
+          chineseMeaning =
+            translation
+              ?.responseData
+              ?.translatedText || "";
+        }
+      } catch (translationError) {
+        console.error(
+          translationError
+        );
       }
 
-      setLookup({ word, phonetic, translation, definition });
-    } catch (error) {
-      console.error(error);
+      /*
+       * 如果 PDF 本身有 Vocabulary，
+       * 后面可以优先使用 PDF 的词汇解释。
+       *
+       * 当前先使用：
+       * 英文词典定义
+       * +
+       * 中文翻译
+       * +
+       * 当前句语境
+       */
+
+      setLookup({
+        word,
+        phonetic,
+        partOfSpeech,
+        definition,
+        chineseMeaning,
+        example:
+          currentSentenceText,
+      });
+    } catch (err) {
+      console.error(err);
+
       setLookup({
         word,
         phonetic: "",
-        translation: "暂时无法查询，请检查网络连接。",
+        partOfSpeech: "",
         definition: "",
+        chineseMeaning:
+          "暂时无法查询这个单词。",
+        example:
+          currentSentenceText,
       });
     } finally {
       setLookupLoading(false);
     }
   }
 
-  function addVocab() {
+  async function saveVocabulary() {
     if (!lookup?.word) return;
-    if (vocab.some((v) => v.word === lookup.word)) return;
-    setVocab((items) => [
-      ...items,
-      {
-        word: lookup.word,
-        translation: lookup.translation || "暂无中文释义",
-        phonetic: lookup.phonetic || "",
-        definition: lookup.definition || "",
-        createdAt: Date.now(),
-      },
-    ]);
-  }
 
-  function removeVocab(word) {
-    setVocab((items) => items.filter((v) => v.word !== word));
-  }
+    if (
+      vocabulary.some(
+        (item) =>
+          item.word === lookup.word
+      )
+    ) {
+      notify("这个单词已经在生词本里");
+      return;
+    }
 
-  function renderSentence(text) {
-    return text.split(/(\s+)/).map((part, index) => {
-      if (/^\s+$/.test(part)) return part;
-      const word = cleanWord(part);
-      if (!word) return <span key={index}>{part}</span>;
-      return (
-        <button
-          key={index}
-          className="word"
-          onClick={() => lookupWord(word)}
-          title="点击查生词"
-        >
-          {part}
-        </button>
+    if (!supabase) {
+      notify("Supabase 尚未连接");
+      return;
+    }
+
+    const { data, error } =
+      await supabase
+        .from("vocabulary")
+        .insert({
+          word: lookup.word,
+          phonetic:
+            lookup.phonetic || "",
+          part_of_speech:
+            lookup.partOfSpeech || "",
+          definition:
+            lookup.definition || "",
+          chinese_meaning:
+            lookup.chineseMeaning ||
+            "",
+          example_sentence:
+            lookup.example || "",
+          material_id:
+            activeMaterial?.id ||
+            null,
+        })
+        .select()
+        .single();
+
+    if (error) {
+      console.error(error);
+      notify(
+        "加入生词本失败"
       );
-    });
+      return;
+    }
+
+    setVocabulary((items) => [
+      data,
+      ...items,
+    ]);
+
+    notify(
+      `${lookup.word} 已加入生词本`
+    );
   }
 
-  function handleAudioTime() {
-    const el = audioRef.current;
-    if (!el) return;
-    setCurrentTime(el.currentTime);
+  async function deleteVocabulary(id) {
+    if (!supabase) return;
 
-    if (sentences.length && duration) {
-      const ratio = el.currentTime / duration;
-      const totalChars = sentences.reduce((n, s) => n + s.length, 0) || 1;
-      let accumulated = 0;
-      const target = ratio * totalChars;
+    await supabase
+      .from("vocabulary")
+      .delete()
+      .eq("id", id);
 
-      for (let i = 0; i < sentences.length; i++) {
-        accumulated += sentences[i].length;
-        if (target <= accumulated) {
-          setCurrentSentence(i);
-          break;
-        }
+    setVocabulary((items) =>
+      items.filter(
+        (item) =>
+          item.id !== id
+      )
+    );
+  }
+
+  async function createMaterial() {
+    if (!materialName.trim()) {
+      setError(
+        "请先给这份听力材料命名。"
+      );
+      return;
+    }
+
+    if (!audioFile) {
+      setError(
+        "请先上传音频。"
+      );
+      return;
+    }
+
+    if (!pdfFile) {
+      setError(
+        "请先上传 PDF 文稿。"
+      );
+      return;
+    }
+
+    if (!supabase) {
+      setError(
+        "Supabase 连接没有配置成功。"
+      );
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const materialId =
+        crypto.randomUUID();
+
+      /*
+       * 这里先创建材料记录。
+       *
+       * 下一步建立 Storage Bucket 后，
+       * 再把 audioFile / pdfFile 真正上传到
+       * Supabase Storage。
+       */
+
+      const { data, error } =
+        await supabase
+          .from("materials")
+          .insert({
+            id: materialId,
+            name:
+              materialName.trim(),
+            audio_filename:
+              audioFile.name,
+            pdf_filename:
+              pdfFile.name,
+            transcript:
+              pdfText,
+            segments:
+              sentences,
+            current_segment: 0,
+            progress: 0,
+          })
+          .select()
+          .single();
+
+      if (error) {
+        console.error(error);
+
+        throw error;
       }
+
+      setMaterials((items) => [
+        data,
+        ...items,
+      ]);
+
+      setActiveMaterial(data);
+
+      notify(
+        "学习材料已经建立"
+      );
+
+      setPage("practice");
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        "材料保存失败，请检查 Supabase 连接。"
+      );
+    } finally {
+      setLoading(false);
     }
   }
 
-  function handleAudioEnded() {
-    setPlaying(false);
+  async function openMaterial(material) {
+    setActiveMaterial(material);
+
+    const savedSentences =
+      Array.isArray(
+        material.segments
+      )
+        ? material.segments
+        : [];
+
+    setSentences(
+      savedSentences.map(
+        (item, index) => ({
+          ...item,
+          index,
+        })
+      )
+    );
+
+    setPdfText(
+      material.transcript || ""
+    );
+
+    setMaterialName(
+      material.name || ""
+    );
+
+    setCurrentSentence(
+      material.current_segment || 0
+    );
+
+    /*
+     * 这里以后从 Supabase Storage
+     * 获取真正保存的音频 URL。
+     */
+
+    setPage("practice");
+
+    notify(
+      `已打开：${material.name}`
+    );
   }
+
+  function renderWords(text) {
+    return text
+      .split(/(\s+)/)
+      .map((part, index) => {
+        if (/^\s+$/.test(part)) {
+          return (
+            <span key={index}>
+              {part}
+            </span>
+          );
+        }
+
+        const word =
+          cleanWord(part);
+
+        if (!word) {
+          return (
+            <span key={index}>
+              {part}
+            </span>
+          );
+        }
+
+        return (
+          <button
+            key={index}
+            className="word"
+            onClick={() =>
+              lookupWord(word)
+            }
+          >
+            {part}
+          </button>
+        );
+      });
+  }
+
+  const progress =
+    duration > 0
+      ? Math.min(
+          100,
+          (currentTime /
+            duration) *
+            100
+        )
+      : 0;
+
+  const currentRange =
+    getSentenceRange(
+      currentSentence
+    );
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">L</span>
-          <div>
-            <strong>Listenly</strong>
-            <small>英语精听学习室</small>
-          </div>
+      {message && (
+        <div className="toast">
+          {message}
         </div>
+      )}
+
+      <header className="topbar">
+        <button
+          className="brand"
+          onClick={() =>
+            setPage("library")
+          }
+        >
+          <span className="brand-logo">
+            L
+          </span>
+
+          <span>
+            <strong>
+              Listenly
+            </strong>
+
+            <small>
+              英语精听学习室
+            </small>
+          </span>
+        </button>
 
         <nav>
-          <button className="nav-active">学习</button>
-          <button onClick={() => setMode("精听")}>精听</button>
-          <button onClick={() => setMode("听写")}>听写</button>
-          <button onClick={() => setMode("生词本")}>生词本</button>
+          <button
+            className={
+              page === "library"
+                ? "active"
+                : ""
+            }
+            onClick={() =>
+              setPage("library")
+            }
+          >
+            我的听力
+          </button>
+
+          <button
+            className={
+              page === "practice"
+                ? "active"
+                : ""
+            }
+            onClick={() =>
+              setPage("practice")
+            }
+          >
+            精听
+          </button>
+
+          <button
+            className={
+              page === "dictation"
+                ? "active"
+                : ""
+            }
+            onClick={() =>
+              setPage("dictation")
+            }
+          >
+            听写
+          </button>
+
+          <button
+            className={
+              page === "vocabulary"
+                ? "active"
+                : ""
+            }
+            onClick={() =>
+              setPage("vocabulary")
+            }
+          >
+            生词本
+          </button>
         </nav>
       </header>
 
-      <main>
-        <section className="hero">
-          <div>
-            <span className="eyebrow">ENGLISH LISTENING LAB</span>
-            <h1>听懂每一句，<em>真正学会英语。</em></h1>
-            <p>上传音频和 PDF 文稿，逐句精听、听写、查生词，让一份学习材料真正被学会。</p>
-          </div>
-          <div className="hero-badge">
-            <span>PDF</span>
-            <span>+</span>
-            <span>Audio</span>
-          </div>
-        </section>
+      <main className="container">
+        {page === "library" && (
+          <>
+            <section className="hero">
+              <span className="eyebrow">
+                ENGLISH LISTENING LAB
+              </span>
 
-        <section className="upload-grid">
-          <div
-            className="upload-card"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <div className="upload-icon">🎧</div>
-            <div>
-              <h3>上传英语音频</h3>
-              <p>MP3 · WAV · M4A</p>
-              <small>{audioFile ? audioFile.name : "点击选择音频文件"}</small>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="audio/*"
-              hidden
-              onChange={(e) => handleAudio(e.target.files?.[0])}
-            />
-          </div>
+              <h1>
+                听懂每一句，
+                <br />
+                <em>
+                  真正学会英语。
+                </em>
+              </h1>
 
-          <div
-            className="upload-card"
-            onClick={() => pdfInputRef.current?.click()}
-          >
-            <div className="upload-icon">📄</div>
-            <div>
-              <h3>上传 PDF 文稿</h3>
-              <p>直接上传，不需要转换 TXT</p>
-              <small>{pdfFile ? pdfFile.name : "点击选择 PDF 文稿"}</small>
-            </div>
-            <input
-              ref={pdfInputRef}
-              type="file"
-              accept=".pdf,application/pdf"
-              hidden
-              onChange={(e) => handlePdf(e.target.files?.[0])}
-            />
-          </div>
-        </section>
+              <p>
+                上传音频和 PDF
+                文稿，建立属于自己的英语精听资料库。
+              </p>
+            </section>
 
-        {message && <div className="message">{message}</div>}
+            <section className="card create-card">
+              <h2>
+                新建听力材料
+              </h2>
 
-        {(audioUrl || sentences.length > 0) && (
-          <section className="workspace">
-            <div className="player card">
-              <div className="player-head">
-                <div>
-                  <span className="eyebrow">CURRENT MATERIAL</span>
-                  <h2>{audioFile?.name || "尚未上传音频"}</h2>
-                </div>
-                <span className="pill">{sentences.length} 句</span>
-              </div>
+              <p className="sub">
+                一份音频 + 一份 PDF
+                文稿 = 一个完整学习材料
+              </p>
 
-              <audio
-                ref={audioRef}
-                src={audioUrl}
-                onTimeUpdate={handleAudioTime}
-                onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-                onPlay={() => setPlaying(true)}
-                onPause={() => setPlaying(false)}
-                onEnded={handleAudioEnded}
+              <input
+                className="name-input"
+                value={materialName}
+                onChange={(event) =>
+                  setMaterialName(
+                    event.target.value
+                  )
+                }
+                placeholder="给这份材料起个名字，例如：BBC｜咖啡脱咖啡因"
               />
 
-              <div className="time-row">
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(duration)}</span>
+              <div className="upload-grid">
+                <button
+                  className="upload-box"
+                  onClick={() =>
+                    audioInputRef.current?.click()
+                  }
+                >
+                  <span>
+                    🎧
+                  </span>
+
+                  <strong>
+                    {audioFile
+                      ? audioFile.name
+                      : "上传英语音频"}
+                  </strong>
+
+                  <small>
+                    MP3 · WAV · M4A
+                  </small>
+                </button>
+
+                <button
+                  className="upload-box"
+                  onClick={() =>
+                    pdfInputRef.current?.click()
+                  }
+                >
+                  <span>
+                    📄
+                  </span>
+
+                  <strong>
+                    {pdfFile
+                      ? pdfFile.name
+                      : "上传 PDF 文稿"}
+                  </strong>
+
+                  <small>
+                    自动寻找 Transcript
+                  </small>
+                </button>
               </div>
 
               <input
-                className="range"
-                type="range"
-                min="0"
-                max={duration || 0}
-                step="0.01"
-                value={currentTime}
-                style={{ "--progress": `${progress}%` }}
-                onChange={(e) => seekTo(e.target.value)}
+                ref={audioInputRef}
+                type="file"
+                accept="audio/*"
+                hidden
+                onChange={(event) =>
+                  selectAudio(
+                    event.target.files?.[0]
+                  )
+                }
               />
 
-              <div className="player-actions">
-                <button className="round" onClick={togglePlay}>
-                  {playing ? "Ⅱ" : "▶"}
-                </button>
-                <button className="secondary" onClick={replaySentence}>
-                  ↻ 重听本句
-                </button>
-                <select
-                  defaultValue="1"
-                  onChange={(e) => {
-                    if (audioRef.current) audioRef.current.playbackRate = Number(e.target.value);
-                  }}
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept=".pdf,application/pdf"
+                hidden
+                onChange={(event) =>
+                  extractPdf(
+                    event.target.files?.[0]
+                  )
+                }
+              />
+
+              {loading && (
+                <div className="loading">
+                  正在处理……
+                </div>
+              )}
+
+              {error && (
+                <div className="error">
+                  {error}
+                </div>
+              )}
+
+              <button
+                className="primary large"
+                onClick={
+                  createMaterial
+                }
+                disabled={loading}
+              >
+                保存到我的听力 →
+              </button>
+            </section>
+
+            <section className="library-section">
+              <div className="section-title">
+                <div>
+                  <span className="eyebrow">
+                    MY LISTENING
+                  </span>
+
+                  <h2>
+                    我的听力
+                  </h2>
+                </div>
+
+                <span>
+                  {materials.length} 个材料
+                </span>
+              </div>
+
+              {materials.length === 0 ? (
+                <div className="card empty-library">
+                  <div>
+                    🎧
+                  </div>
+
+                  <h3>
+                    还没有学习材料
+                  </h3>
+
+                  <p>
+                    上传你的第一份音频和 PDF
+                    吧。
+                  </p>
+                </div>
+              ) : (
+                <div className="material-grid">
+                  {materials.map(
+                    (material) => (
+                      <button
+                        key={
+                          material.id
+                        }
+                        className="material-card"
+                        onClick={() =>
+                          openMaterial(
+                            material
+                          )
+                        }
+                      >
+                        <div className="material-icon">
+                          🎧
+                        </div>
+
+                        <div>
+                          <h3>
+                            {
+                              material.name
+                            }
+                          </h3>
+
+                          <p>
+                            {
+                              material.audio_filename
+                            }
+                          </p>
+
+                          <small>
+                            {
+                              material.pdf_filename
+                            }
+                          </small>
+                        </div>
+
+                        <span>
+                          →
+                        </span>
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {(page === "practice" ||
+          page === "dictation") && (
+          <>
+            <section className="workspace-head">
+              <button
+                className="back"
+                onClick={() =>
+                  setPage("library")
+                }
+              >
+                ← 我的听力
+              </button>
+
+              <span className="eyebrow">
+                LISTENING PRACTICE
+              </span>
+
+              <h1>
+                {activeMaterial?.name ||
+                  materialName ||
+                  "精听"}
+              </h1>
+            </section>
+
+            <section className="card player-card">
+              <audio
+                ref={audioRef}
+                src={audioUrl}
+                onLoadedMetadata={
+                  handleLoadedMetadata
+                }
+                onTimeUpdate={
+                  handleTimeUpdate
+                }
+                onPlay={handlePlay}
+                onPause={handlePause}
+              />
+
+              <div className="player-title">
+                <div>
+                  <span>
+                    当前材料
+                  </span>
+
+                  <strong>
+                    {activeMaterial?.name ||
+                      materialName}
+                  </strong>
+                </div>
+
+                <span>
+                  {sentences.length} 句
+                </span>
+              </div>
+
+              <div className="time">
+                <span>
+                  {formatTime(
+                    currentTime
+                  )}
+                </span>
+
+                <span>
+                  {formatTime(
+                    duration
+                  )}
+                </span>
+              </div>
+
+              <input
+                className="progress"
+                type="range"
+                min="0"
+                max={
+                  duration || 0
+                }
+                value={
+                  currentTime
+                }
+                step="0.01"
+                style={{
+                  "--progress": `${progress}%`,
+                }}
+                onChange={(event) => {
+                  if (
+                    audioRef.current
+                  ) {
+                    audioRef.current.currentTime =
+                      Number(
+                        event.target
+                          .value
+                      );
+                  }
+                }}
+              />
+
+              <div className="player-controls">
+                <button
+                  className="primary round"
+                  onClick={
+                    togglePlay
+                  }
                 >
-                  <option value="0.75">0.75×</option>
-                  <option value="1">1×</option>
-                  <option value="1.25">1.25×</option>
-                  <option value="1.5">1.5×</option>
+                  {playing
+                    ? "Ⅱ"
+                    : "▶"}
+                </button>
+
+                <button
+                  className="secondary"
+                  onClick={
+                    replayCurrentSentence
+                  }
+                >
+                  ↻ 重播本句
+                </button>
+
+                <button
+                  className="secondary"
+                  onClick={
+                    goPreviousSentence
+                  }
+                >
+                  ← 上一句
+                </button>
+
+                <button
+                  className="secondary"
+                  onClick={
+                    goNextSentence
+                  }
+                >
+                  下一句 →
+                </button>
+
+                <select
+                  value={speed}
+                  onChange={(event) =>
+                    setSpeed(
+                      Number(
+                        event.target
+                          .value
+                      )
+                    )
+                  }
+                >
+                  <option value="0.75">
+                    0.75×
+                  </option>
+
+                  <option value="1">
+                    1×
+                  </option>
+
+                  <option value="1.25">
+                    1.25×
+                  </option>
+
+                  <option value="1.5">
+                    1.5×
+                  </option>
                 </select>
               </div>
 
-              <div className="notice">
-                当前逐句播放采用“按句子长度估算时间”。如果文稿以后提供时间戳，可升级为精准逐句定位。
+              <div className="player-tip">
+                {currentRange
+                  ? "当前句已经有真实时间轴：播放到句尾会自动暂停；不会自动跳到下一句。"
+                  : "当前材料还没有真实时间轴。完成音频识别与文稿匹配后，才能精准逐句播放。"}
               </div>
-            </div>
+            </section>
 
-            <div className="content-grid">
-              <div className="transcript card">
-                <div className="section-head">
-                  <div className="tabs">
-                    <button
-                      className={mode === "精听" ? "active" : ""}
-                      onClick={() => setMode("精听")}
-                    >
-                      精听
-                    </button>
-                    <button
-                      className={mode === "听写" ? "active" : ""}
-                      onClick={() => setMode("听写")}
-                    >
-                      听写
-                    </button>
-                    <button
-                      className={mode === "文稿" ? "active" : ""}
-                      onClick={() => setMode("文稿")}
-                    >
-                      完整文稿
-                    </button>
-                  </div>
-                  <span>{loadingPdf ? "读取中…" : "点击单词可查词"}</span>
+            <div className="practice-grid">
+              <section className="card transcript-card">
+                <div className="tabs">
+                  <button
+                    className={
+                      page ===
+                      "practice"
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() =>
+                      setPage(
+                        "practice"
+                      )
+                    }
+                  >
+                    精听
+                  </button>
+
+                  <button
+                    className={
+                      page ===
+                      "dictation"
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() =>
+                      setPage(
+                        "dictation"
+                      )
+                    }
+                  >
+                    听写
+                  </button>
                 </div>
 
-                {mode === "文稿" ? (
-                  <div className="full-document">
-                    {documentText || "请先上传 PDF 文稿。"}
-                  </div>
-                ) : sentences.length ? (
-                  <div className="sentence-list">
-                    {sentences.map((sentence, index) => (
-                      <button
-                        key={index}
-                        className={`sentence ${
-                          index === currentSentence ? "current" : ""
-                        }`}
-                        onClick={() => {
-                          setCurrentSentence(index);
-                          setShowAnswer(mode !== "听写");
-                        }}
-                      >
-                        <span className="sentence-number">
-                          {String(index + 1).padStart(2, "0")}
-                        </span>
-                        <span className="sentence-text">
-                          {mode === "听写" && index === currentSentence && !showAnswer
-                            ? "点击「显示答案」查看原文"
-                            : renderSentence(sentence)}
-                        </span>
-                      </button>
-                    ))}
+                {sentences.length ===
+                0 ? (
+                  <div className="empty">
+                    没有检测到 Transcript。
                   </div>
                 ) : (
-                  <div className="empty">
-                    <div>📄</div>
-                    <h3>上传你的 PDF 文稿</h3>
-                    <p>PDF 中的英文文字会自动提取并分句。</p>
-                  </div>
-                )}
+                  <div className="sentences">
+                    {sentences.map(
+                      (
+                        item,
+                        index
+                      ) => (
+                        <button
+                          key={
+                            index
+                          }
+                          className={`sentence ${
+                            index ===
+                            currentSentence
+                              ? "current"
+                              : ""
+                          }`}
+                          onClick={() => {
+                            setCurrentSentence(
+                              index
+                            );
 
-                {mode === "听写" && sentences.length > 0 && (
-                  <div className="dictation-panel">
-                    <div>
-                      <strong>第 {currentSentence + 1} 句</strong>
-                      <p>先听音频，再在心里或纸上写下你听到的内容。</p>
-                    </div>
-                    <div className="dictation-actions">
-                      <button className="secondary" onClick={replaySentence}>▶ 重听</button>
-                      <button className="primary" onClick={() => setShowAnswer((v) => !v)}>
-                        {showAnswer ? "隐藏答案" : "显示答案"}
-                      </button>
-                    </div>
-                    {showAnswer && (
-                      <div className="answer">{renderSentence(currentSentenceText)}</div>
+                            setDictation(
+                              ""
+                            );
+
+                            setDictationChecked(
+                              false
+                            );
+
+                            const range =
+                              getSentenceRange(
+                                index
+                              );
+
+                            if (
+                              range &&
+                              audioRef.current
+                            ) {
+                              audioRef.current.currentTime =
+                                range.start;
+                            }
+                          }}
+                        >
+                          <span>
+                            {String(
+                              index +
+                                1
+                            ).padStart(
+                              2,
+                              "0"
+                            )}
+                          </span>
+
+                          <p>
+                            {renderWords(
+                              item.text
+                            )}
+                          </p>
+                        </button>
+                      )
                     )}
-                    <div className="next-row">
-                      <button className="secondary" onClick={prevSentence}>上一句</button>
-                      <button className="primary" onClick={nextSentence}>下一句 →</button>
-                    </div>
                   </div>
                 )}
-              </div>
 
-              <aside className="sidebar">
-                <div className="card vocab-card">
-                  <div className="section-title">
-                    <span>VOCABULARY</span>
-                    <strong>生词本 {vocab.length}</strong>
-                  </div>
+                {page ===
+                  "dictation" &&
+                  currentSentenceText && (
+                    <div className="dictation">
+                      <span className="eyebrow">
+                        DICTATION
+                      </span>
 
-                  {vocab.length ? (
-                    <div className="vocab-list">
-                      {vocab.map((item) => (
-                        <div className="vocab-item" key={item.word}>
-                          <div>
-                            <strong>{item.word}</strong>
-                            {item.phonetic && <small>{item.phonetic}</small>}
-                            <p>{item.translation}</p>
-                          </div>
-                          <button onClick={() => removeVocab(item.word)}>✓</button>
+                      <h3>
+                        第{" "}
+                        {currentSentence +
+                          1}{" "}
+                        句
+                      </h3>
+
+                      <p>
+                        先播放当前句，再输入你听到的英文。
+                      </p>
+
+                      <textarea
+                        value={
+                          dictation
+                        }
+                        onChange={(
+                          event
+                        ) => {
+                          setDictation(
+                            event
+                              .target
+                              .value
+                          );
+
+                          setDictationChecked(
+                            false
+                          );
+                        }}
+                        placeholder="输入你听到的英文……"
+                      />
+
+                      <button
+                        className="primary"
+                        onClick={() =>
+                          setDictationChecked(
+                            true
+                          )
+                        }
+                      >
+                        检查答案
+                      </button>
+
+                      {dictationChecked && (
+                        <div className="result">
+                          <strong>
+                            {normalizeText(
+                              dictation
+                            ) ===
+                            normalizeText(
+                              currentSentenceText
+                            )
+                              ? "✓ 完全正确"
+                              : "再听一次"}
+                          </strong>
+
+                          <p>
+                            正确答案：
+                            {
+                              currentSentenceText
+                            }
+                          </p>
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-vocab">
-                      点击文稿里的英文单词，就能查询并加入生词本。
+                      )}
                     </div>
                   )}
-                </div>
+              </section>
 
-                {lookup && (
-                  <div className="card lookup-card">
-                    <span className="eyebrow">WORD LOOKUP</span>
-                    <h2>{lookup.word}</h2>
-                    {lookup.phonetic && <div className="phonetic">{lookup.phonetic}</div>}
+              <aside>
+                {lookup ? (
+                  <section className="card lookup">
+                    <span className="eyebrow">
+                      WORD LOOKUP
+                    </span>
+
+                    <h2>
+                      {lookup.word}
+                    </h2>
+
+                    {lookup.phonetic && (
+                      <div className="phonetic">
+                        {
+                          lookup.phonetic
+                        }
+                      </div>
+                    )}
 
                     {lookupLoading ? (
-                      <p>正在查询……</p>
+                      <p>
+                        正在查询……
+                      </p>
                     ) : (
                       <>
-                        <div className="translation">
-                          {lookup.translation || "暂无中文释义"}
+                        <div className="chinese">
+                          {lookup.chineseMeaning ||
+                            "暂无中文释义"}
                         </div>
-                        {lookup.definition && (
-                          <div className="definition">{lookup.definition}</div>
+
+                        {lookup.partOfSpeech && (
+                          <div className="pos">
+                            {
+                              lookup.partOfSpeech
+                            }
+                          </div>
                         )}
-                        <button className="primary full" onClick={addVocab}>
+
+                        <p className="definition">
+                          {
+                            lookup.definition
+                          }
+                        </p>
+
+                        <div className="context">
+                          <span>
+                            原文语境
+                          </span>
+
+                          <p>
+                            {
+                              lookup.example
+                            }
+                          </p>
+                        </div>
+
+                        <button
+                          className="primary full"
+                          onClick={
+                            saveVocabulary
+                          }
+                        >
                           ＋ 加入生词本
                         </button>
                       </>
                     )}
-                  </div>
+                  </section>
+                ) : (
+                  <section className="card lookup-empty">
+                    <span className="eyebrow">
+                      WORD LOOKUP
+                    </span>
+
+                    <h3>
+                      点击句子里的英文单词
+                    </h3>
+
+                    <p>
+                      查看音标、词性、英文定义和中文释义。
+                    </p>
+                  </section>
                 )}
+
+                <section className="card mini-vocab">
+                  <div className="mini-title">
+                    <span>
+                      VOCABULARY
+                    </span>
+
+                    <button
+                      onClick={() =>
+                        setPage(
+                          "vocabulary"
+                        )
+                      }
+                    >
+                      查看全部 →
+                    </button>
+                  </div>
+
+                  {vocabulary
+                    .slice(0, 5)
+                    .map((item) => (
+                      <div
+                        className="mini-word"
+                        key={
+                          item.id
+                        }
+                      >
+                        <strong>
+                          {
+                            item.word
+                          }
+                        </strong>
+
+                        <span>
+                          {
+                            item.chinese_meaning
+                          }
+                        </span>
+                      </div>
+                    ))}
+                </section>
               </aside>
             </div>
-          </section>
+          </>
         )}
 
-        <section className="steps">
-          <div><b>01</b><span>上传音频</span></div>
-          <div><b>02</b><span>上传 PDF</span></div>
-          <div><b>03</b><span>逐句精听</span></div>
-          <div><b>04</b><span>查词 & 复习</span></div>
-        </section>
+        {page ===
+          "vocabulary" && (
+          <>
+            <section className="workspace-head">
+              <span className="eyebrow">
+                MY VOCABULARY
+              </span>
+
+              <h1>
+                我的生词本
+              </h1>
+
+              <p>
+                所有收藏的单词都会保存到 Supabase。
+              </p>
+            </section>
+
+            <section className="card vocab-page">
+              {vocabulary.length ===
+              0 ? (
+                <div className="empty">
+                  还没有生词。
+                </div>
+              ) : (
+                vocabulary.map(
+                  (item) => (
+                    <div
+                      className="vocab-row"
+                      key={item.id}
+                    >
+                      <div>
+                        <h3>
+                          {
+                            item.word
+                          }
+                        </h3>
+
+                        <small>
+                          {
+                            item.phonetic
+                          }
+                        </small>
+
+                        <p>
+                          {
+                            item.chinese_meaning
+                          }
+                        </p>
+
+                        <span>
+                          {
+                            item.definition
+                          }
+                        </span>
+                      </div>
+
+                      <button
+                        className="secondary"
+                        onClick={() =>
+                          deleteVocabulary(
+                            item.id
+                          )
+                        }
+                      >
+                        删除
+                      </button>
+                    </div>
+                  )
+                )
+              )}
+            </section>
+          </>
+        )}
       </main>
 
-      <footer>Listenly · 英语精听学习室</footer>
+      <footer>
+        Listenly · 英语精听学习室
+      </footer>
     </div>
   );
 }
