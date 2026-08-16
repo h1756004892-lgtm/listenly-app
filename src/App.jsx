@@ -1,249 +1,363 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const DICT_API = "https://api.dictionaryapi.dev/api/v2/entries/en/";
+
+function splitTranscript(text) {
+  const cleaned = text.replace(/\r/g, "").trim();
+  if (!cleaned) return [];
+  // 支持 [00:00] sentence / [00:00-00:05] sentence 这类带时间标记的文稿
+  const lines = cleaned.split("\n").map(s => s.trim()).filter(Boolean);
+  const timestamped = lines.map((line) => {
+    const m = line.match(/^\[(\d{1,2}):(\d{2})(?:\s*-\s*(\d{1,2}):(\d{2}))?\]\s*(.*)$/);
+    if (!m) return null;
+    const start = Number(m[1]) * 60 + Number(m[2]);
+    const end = m[3] ? Number(m[3]) * 60 + Number(m[4]) : null;
+    return { text: m[5], start, end };
+  });
+  if (timestamped.every(Boolean)) return timestamped;
+
+  return cleaned
+    .replace(/\n+/g, " ")
+    .split(/(?<=[.!?。！？])\s+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(text => ({ text, start: null, end: null }));
+}
+
+function formatTime(sec) {
+  if (!Number.isFinite(sec)) return "00:00";
+  const s = Math.max(0, Math.floor(sec));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function normalize(s) {
+  return s.toLowerCase().replace(/[“”"'.,!?;:()[\]{}]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function tokenize(text) {
+  return text.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) || [];
+}
 
 export default function App() {
   const audioRef = useRef(null);
-  const [file, setFile] = useState(null);
+  const fileAudioRef = useRef(null);
+  const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState("");
-  const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [transcriptFile, setTranscriptFile] = useState(null);
+  const [transcript, setTranscript] = useState("");
+  const [sentences, setSentences] = useState([]);
+  const [current, setCurrent] = useState(0);
+  const [mode, setMode] = useState("listen");
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [mode, setMode] = useState("listen");
+  const [hideText, setHideText] = useState(false);
   const [answer, setAnswer] = useState("");
+  const [checked, setChecked] = useState(false);
   const [savedWords, setSavedWords] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("listenly-vocabulary") || "[]");
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem("listenly-vocab") || "[]"); } catch { return []; }
   });
+  const [lookup, setLookup] = useState(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [page, setPage] = useState("home");
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioTime, setAudioTime] = useState(0);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    localStorage.setItem("listenly-vocabulary", JSON.stringify(savedWords));
+    localStorage.setItem("listenly-vocab", JSON.stringify(savedWords));
   }, [savedWords]);
 
+  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+
   useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => setAudioTime(audio.currentTime);
+    const onMeta = () => setAudioDuration(audio.duration || 0);
+    const onEnd = () => setPlaying(false);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onMeta);
+    audio.addEventListener("ended", onEnd);
     return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onMeta);
+      audio.removeEventListener("ended", onEnd);
     };
   }, [audioUrl]);
 
-  function handleUpload(selectedFile) {
-    if (!selectedFile) return;
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.playbackRate = speed;
+  }, [speed]);
 
-    const valid = /\.(mp3|wav|m4a|webm)$/i.test(selectedFile.name);
-    if (!valid) {
-      alert("Please upload an MP3, WAV, M4A, or WebM audio file.");
+  const sentence = sentences[current] || null;
+
+  const estimatedRange = useMemo(() => {
+    if (!sentence || !audioDuration) return null;
+    if (sentence.start != null) {
+      const end = sentence.end != null ? sentence.end : Math.min(audioDuration, sentence.start + 8);
+      return { start: sentence.start, end };
+    }
+    const totalChars = sentences.reduce((a, s) => a + s.text.length, 0) || 1;
+    const before = sentences.slice(0, current).reduce((a, s) => a + s.text.length, 0);
+    const start = audioDuration * before / totalChars;
+    const end = audioDuration * (before + sentence.text.length) / totalChars;
+    return { start, end };
+  }, [sentence, sentences, current, audioDuration]);
+
+  const chooseAudio = (file) => {
+    if (!file) return;
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    const url = URL.createObjectURL(file);
+    setAudioFile(file);
+    setAudioUrl(url);
+    setNotice("音频已载入");
+  };
+
+  const chooseTranscript = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const list = splitTranscript(text);
+    setTranscriptFile(file);
+    setTranscript(text);
+    setSentences(list);
+    setCurrent(0);
+    setNotice(`已载入 ${list.length} 句文稿`);
+    setPage("practice");
+  };
+
+  const togglePlay = async () => {
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
       return;
     }
-
-    if (audioUrl) URL.revokeObjectURL(audioUrl);
-
-    setFile(selectedFile);
-    setAudioUrl(URL.createObjectURL(selectedFile));
-    setCurrentTime(0);
-    setPlaying(false);
-  }
-
-  function togglePlay() {
-    if (!audioRef.current) return;
-
-    if (playing) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play().catch(() => {});
+    try {
+      await audio.play();
+      setPlaying(true);
+    } catch {
+      setNotice("请先选择音频文件");
     }
-  }
+  };
 
-  function replay() {
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = 0;
-    audioRef.current.play().catch(() => {});
-  }
-
-  function changeSpeed(value) {
-    const next = Number(value);
-    setSpeed(next);
-    if (audioRef.current) {
-      audioRef.current.playbackRate = next;
+  const playSentence = async (index = current) => {
+    const audio = audioRef.current;
+    if (!audio || !audioUrl) {
+      setNotice("请先上传音频");
+      return;
     }
-  }
+    const s = sentences[index];
+    if (!s) return;
+    setCurrent(index);
+    const range = (() => {
+      if (s.start != null) return { start: s.start, end: s.end ?? Math.min(audioDuration, s.start + 8) };
+      const total = sentences.reduce((a, x) => a + x.text.length, 0) || 1;
+      const before = sentences.slice(0, index).reduce((a, x) => a + x.text.length, 0);
+      return { start: audioDuration * before / total, end: audioDuration * (before + s.text.length) / total };
+    })();
+    audio.currentTime = Math.max(0, range.start);
+    audio.playbackRate = speed;
+    await audio.play();
+    setPlaying(true);
+    const stopAt = () => {
+      if (audio.currentTime >= range.end - 0.05) {
+        audio.pause();
+        setPlaying(false);
+        audio.removeEventListener("timeupdate", stopAt);
+      }
+    };
+    audio.addEventListener("timeupdate", stopAt);
+  };
 
-  function formatTime(value) {
-    const seconds = Number.isFinite(value) ? value : 0;
-    const minutes = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  }
+  const checkAnswer = () => setChecked(true);
 
-  function saveWord(word) {
-    setSavedWords((old) => old.includes(word) ? old : [...old, word]);
-  }
+  const addWord = (word, meaning = "") => {
+    const clean = word.toLowerCase();
+    if (!clean) return;
+    setSavedWords(prev => prev.some(x => x.word === clean) ? prev : [{ word: clean, meaning, addedAt: Date.now() }, ...prev]);
+  };
 
-  function removeWord(word) {
-    setSavedWords((old) => old.filter((item) => item !== word));
-  }
+  const lookupWord = async (word) => {
+    const clean = word.toLowerCase();
+    if (!clean) return;
+    setLookupLoading(true);
+    setLookup({ word: clean, meaning: "查询中……", phonetic: "", examples: [] });
+    try {
+      const res = await fetch(`${DICT_API}${encodeURIComponent(clean)}`);
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const entry = data[0];
+      const meanings = entry?.meanings || [];
+      const defs = meanings.flatMap(m => (m.definitions || []).slice(0, 2).map(d => ({
+        partOfSpeech: m.partOfSpeech,
+        definition: d.definition,
+        example: d.example || ""
+      }))).slice(0, 5);
+      setLookup({ word: clean, phonetic: entry?.phonetic || entry?.phonetics?.find(p => p.text)?.text || "", meaning: defs[0]?.definition || "暂无释义", definitions: defs });
+    } catch {
+      setLookup({ word: clean, meaning: "暂时查不到释义。你可以先收藏，稍后再查。", phonetic: "", definitions: [] });
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  const compare = checked && sentence ? normalize(answer) === normalize(sentence.text) : null;
+
+  const renderClickableText = (text) => {
+    return tokenize(text).map((word, i) => (
+      <button key={`${word}-${i}`} className="word" onClick={() => lookupWord(word)} title="点击查词">
+        {word}
+      </button>
+    ));
+  };
 
   return (
     <div className="app">
       <header className="topbar">
-        <a className="logo" href="#home">LISTENLY</a>
+        <button className="brand" onClick={() => setPage("home")}>LISTENLY<span>听着</span></button>
         <nav>
-          <a href="#home">Home</a>
-          <a href="#listening">Listening</a>
-          <a href="#vocabulary">Vocabulary ({savedWords.length})</a>
+          <button className={page === "home" ? "active" : ""} onClick={() => setPage("home")}>首页</button>
+          <button className={page === "practice" ? "active" : ""} onClick={() => setPage("practice")}>精听</button>
+          <button className={page === "dictation" ? "active" : ""} onClick={() => setPage("dictation")}>听写</button>
+          <button className={page === "vocab" ? "active" : ""} onClick={() => setPage("vocab")}>生词本</button>
         </nav>
       </header>
 
+      {notice && <div className="notice" onClick={() => setNotice("")}>{notice}</div>}
+
       <main>
-        <section id="home" className="hero">
-          <div className="eyebrow">ENGLISH LISTENING LAB</div>
-          <h1>Listen.<br /><em>Write.</em> Understand.</h1>
-          <p>
-            Upload your English audio and turn it into a focused listening
-            practice session.
-          </p>
+        {page === "home" && (
+          <section className="hero">
+            <div className="eyebrow">ENGLISH LISTENING LAB</div>
+            <h1>听懂每一句，<br/><em>真正学会英语。</em></h1>
+            <p className="lead">上传音频和文稿，进入逐句精听、听写与生词学习。</p>
 
-          <label className="upload-box">
-            <input
-              type="file"
-              accept=".mp3,.wav,.m4a,.webm,audio/*"
-              onChange={(event) => handleUpload(event.target.files?.[0])}
-            />
-            <span className="upload-icon">↑</span>
-            <strong>Drop your audio here</strong>
-            <small>or click to browse · MP3 · WAV · M4A</small>
-          </label>
-        </section>
+            <div className="upload-grid">
+              <label className="upload-card">
+                <input type="file" accept="audio/*,.mp3,.wav,.m4a" onChange={e => chooseAudio(e.target.files?.[0])}/>
+                <span className="upload-icon">♪</span>
+                <strong>上传音频</strong>
+                <small>{audioFile ? audioFile.name : "MP3 / WAV / M4A"}</small>
+              </label>
+              <label className="upload-card">
+                <input type="file" accept=".txt,.md,.text" onChange={e => chooseTranscript(e.target.files?.[0])}/>
+                <span className="upload-icon">Aa</span>
+                <strong>上传文稿</strong>
+                <small>{transcriptFile ? transcriptFile.name : "TXT 文稿，支持逐句或时间戳"}</small>
+              </label>
+            </div>
 
-        <section id="listening" className="section">
-          <div className="section-label">LISTENING LAB</div>
-          <h2>{file ? file.name : "No audio uploaded yet"}</h2>
+            <div className="tip">
+              <b>使用方式</b>
+              <span>先上传音频，再上传对应文稿 → 进入「精听」逐句练习 → 点击单词查中文释义 → 切换「听写」检验听力。</span>
+            </div>
+          </section>
+        )}
 
-          {file ? (
-            <>
-              <div className="player-card">
-                <audio
-                  ref={audioRef}
-                  src={audioUrl}
-                  onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
-                  onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  onEnded={() => setPlaying(false)}
-                />
+        {(page === "practice" || page === "dictation") && (
+          <section className="practice">
+            <div className="page-title">
+              <div>
+                <div className="eyebrow">LISTENING PRACTICE</div>
+                <h2>{page === "practice" ? "精听练习" : "听写训练"}</h2>
+              </div>
+              <div className="file-status">
+                {audioFile ? `音频：${audioFile.name}` : "未上传音频"}<br/>
+                {transcriptFile ? `文稿：${transcriptFile.name}` : "未上传文稿"}
+              </div>
+            </div>
 
-                <div className="time-row">
-                  <span>{formatTime(currentTime)}</span>
-                  <span>{formatTime(duration)}</span>
+            <div className="player-card">
+              <audio ref={audioRef} src={audioUrl} onLoadedMetadata={e => setAudioDuration(e.currentTarget.duration)} />
+              <div className="time-row"><span>{formatTime(audioTime)}</span><span>{formatTime(audioDuration)}</span></div>
+              <input className="seek" type="range" min="0" max={audioDuration || 0} step="0.1" value={audioTime} onChange={e => { if (audioRef.current) audioRef.current.currentTime = Number(e.target.value); }} />
+              <div className="player-controls">
+                <button className="circle" onClick={togglePlay}>{playing ? "Ⅱ" : "▶"}</button>
+                <button onClick={() => playSentence(current)}>↻ 重播本句</button>
+                <select value={speed} onChange={e => setSpeed(Number(e.target.value))}>
+                  <option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="workspace">
+              <div className="sentence-panel">
+                <div className="tabs">
+                  <button className={page === "practice" ? "selected" : ""} onClick={() => setPage("practice")}>精听</button>
+                  <button className={page === "dictation" ? "selected" : ""} onClick={() => setPage("dictation")}>听写</button>
                 </div>
 
-                <input
-                  className="progress"
-                  type="range"
-                  min="0"
-                  max={duration || 0}
-                  step="0.01"
-                  value={currentTime}
-                  onChange={(event) => {
-                    const next = Number(event.target.value);
-                    setCurrentTime(next);
-                    if (audioRef.current) audioRef.current.currentTime = next;
-                  }}
-                />
-
-                <div className="controls">
-                  <button className="round primary-round" onClick={togglePlay}>
-                    {playing ? "Ⅱ" : "▶"}
-                  </button>
-                  <button className="control-button" onClick={replay}>↻ Replay</button>
-                  <select value={speed} onChange={(event) => changeSpeed(event.target.value)}>
-                    <option value="0.8">0.8×</option>
-                    <option value="1">1×</option>
-                    <option value="1.2">1.2×</option>
-                    <option value="1.5">1.5×</option>
-                  </select>
-                </div>
+                {sentences.length === 0 ? (
+                  <div className="empty">请先回到首页上传 TXT 文稿。</div>
+                ) : page === "practice" ? (
+                  <>
+                    <div className="sentence-index">第 {current + 1} / {sentences.length} 句</div>
+                    <div className={`sentence ${hideText ? "hidden" : ""}`}>
+                      {hideText ? "••• 点击“显示原文”查看句子 •••" : renderClickableText(sentence.text)}
+                    </div>
+                    <div className="sentence-actions">
+                      <button onClick={() => playSentence(current)}>▶ 播放本句</button>
+                      <button onClick={() => { setCurrent(Math.max(0, current - 1)); setChecked(false); }}>← 上一句</button>
+                      <button onClick={() => { setCurrent(Math.min(sentences.length - 1, current + 1)); setChecked(false); }}>下一句 →</button>
+                      <button className="ghost" onClick={() => setHideText(v => !v)}>{hideText ? "显示原文" : "隐藏原文"}</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="sentence-index">听写第 {current + 1} / {sentences.length} 句</div>
+                    <p className="hint">先播放本句，不看原文，把你听到的内容输入下面。</p>
+                    <button className="big-play" onClick={() => playSentence(current)}>▶ 播放本句</button>
+                    <textarea value={answer} onChange={e => { setAnswer(e.target.value); setChecked(false); }} placeholder="输入你听到的英文……" />
+                    <div className="sentence-actions">
+                      <button onClick={checkAnswer}>检查答案</button>
+                      <button onClick={() => { setCurrent(Math.min(sentences.length - 1, current + 1)); setAnswer(""); setChecked(false); }}>下一句 →</button>
+                    </div>
+                    {checked && (
+                      <div className={`result ${compare ? "good" : "bad"}`}>
+                        <strong>{compare ? "✓ 完全正确" : "需要再听一遍"}</strong>
+                        {!compare && <p>参考答案：{sentence.text}</p>}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
-              <div className="practice-grid">
-                <article className="practice-card">
-                  <div className="mode-tabs">
-                    <button className={mode === "listen" ? "active" : ""} onClick={() => setMode("listen")}>
-                      Listening
-                    </button>
-                    <button className={mode === "dictation" ? "active" : ""} onClick={() => setMode("dictation")}>
-                      Dictation
-                    </button>
+              <aside className="word-panel">
+                <div className="eyebrow">VOCABULARY</div>
+                {lookup ? (
+                  <div className="lookup">
+                    <div className="lookup-word">{lookup.word}</div>
+                    <div className="phonetic">{lookup.phonetic}</div>
+                    {lookup.definitions?.map((d, i) => <div className="definition" key={i}><b>{d.partOfSpeech}</b><span>{d.definition}</span>{d.example && <small>{d.example}</small>}</div>)}
+                    <button className="save-word" onClick={() => addWord(lookup.word, lookup.meaning)}>＋ 加入生词本</button>
                   </div>
-
-                  {mode === "listen" ? (
-                    <div className="empty-transcript">
-                      <div className="empty-icon">Aa</div>
-                      <h3>Transcript ready for speech recognition</h3>
-                      <p>
-                        Your uploaded audio is playing from the real file above.
-                        The next development step is to connect speech-to-text so
-                        Listenly can generate real sentences and timestamps from it.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="dictation">
-                      <h3>Write what you hear.</h3>
-                      <p>Play the audio, then type the sentence you hear.</p>
-                      <textarea
-                        value={answer}
-                        onChange={(event) => setAnswer(event.target.value)}
-                        placeholder="Type what you hear..."
-                      />
-                      <button className="check-button" onClick={() => alert("Dictation UI is ready. Real transcript checking will be connected after speech recognition.")}>
-                        Check answer
-                      </button>
-                    </div>
-                  )}
-                </article>
-
-                <aside className="vocab-card">
-                  <div className="section-label">VOCABULARY</div>
-                  {["practice", "listening", "understand"].map((word) => (
-                    <div className="word-row" key={word}>
-                      <span>{word}</span>
-                      <button onClick={() => saveWord(word)}>
-                        {savedWords.includes(word) ? "✓" : "＋"}
-                      </button>
-                    </div>
-                  ))}
-                  <p>Saved words stay in this browser.</p>
-                </aside>
-              </div>
-            </>
-          ) : (
-            <div className="empty-state">
-              Upload an audio file above to start.
+                ) : (
+                  <div className="word-empty">点击句子里的英文单词即可查询中文释义。</div>
+                )}
+              </aside>
             </div>
-          )}
-        </section>
+          </section>
+        )}
 
-        <section id="vocabulary" className="section vocabulary">
-          <div className="section-label">MY VOCABULARY</div>
-          <h2>Words worth keeping.</h2>
-
-          {savedWords.length === 0 ? (
-            <div className="empty-state">No saved words yet.</div>
-          ) : (
-            <div className="saved-list">
-              {savedWords.map((word) => (
-                <div className="saved-word" key={word}>
-                  <strong>{word}</strong>
-                  <button onClick={() => removeWord(word)}>Remove</button>
+        {page === "vocab" && (
+          <section className="vocab-page">
+            <div className="eyebrow">MY VOCABULARY</div>
+            <h2>生词本</h2>
+            <p>收藏的单词会保存在当前浏览器中。</p>
+            {savedWords.length === 0 ? <div className="empty">还没有收藏单词。去「精听」里点击单词吧。</div> :
+              <div className="vocab-list">{savedWords.map(item => (
+                <div className="vocab-item" key={item.word}>
+                  <div><strong>{item.word}</strong><span>{item.meaning}</span></div>
+                  <button onClick={() => lookupWord(item.word)}>查词</button>
+                  <button className="remove" onClick={() => setSavedWords(v => v.filter(x => x.word !== item.word))}>删除</button>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
+              ))}</div>}
+          </section>
+        )}
       </main>
 
-      <footer>LISTENLY · Listen. Write. Understand.</footer>
+      <footer>Listenly · 听着 · 浏览器本地学习工具</footer>
     </div>
   );
 }
