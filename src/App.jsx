@@ -201,6 +201,88 @@ function splitSentences(text) {
     );
 }
 
+function buildAutomaticTimeline(
+  sentenceList,
+  audioDuration
+) {
+  if (
+    !Array.isArray(sentenceList) ||
+    sentenceList.length === 0 ||
+    !Number.isFinite(audioDuration) ||
+    audioDuration <= 0
+  ) {
+    return sentenceList || [];
+  }
+
+  const weights = sentenceList.map((sentence) => {
+    const text = String(sentence?.text || "");
+    const words =
+      text.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) || [];
+
+    // 用单词数作为主要权重，字符数作为兜底。
+    return Math.max(
+      words.length || text.length / 5 || 1,
+      1
+    );
+  });
+
+  const totalWeight = weights.reduce(
+    (sum, value) => sum + value,
+    0
+  );
+
+  if (!totalWeight) {
+    return sentenceList;
+  }
+
+  let cursor = 0;
+
+  return sentenceList.map((sentence, index) => {
+    const start = cursor;
+
+    const duration =
+      index === sentenceList.length - 1
+        ? audioDuration - start
+        : audioDuration *
+          (weights[index] / totalWeight);
+
+    const end =
+      index === sentenceList.length - 1
+        ? audioDuration
+        : Math.min(
+            audioDuration,
+            start + duration
+          );
+
+    cursor = end;
+
+    return {
+      ...sentence,
+      index,
+      start_time: Number(start.toFixed(2)),
+      end_time: Number(end.toFixed(2)),
+      auto_timed: true,
+    };
+  });
+}
+
+function hasValidTimeline(sentenceList) {
+  return (
+    Array.isArray(sentenceList) &&
+    sentenceList.length > 0 &&
+    sentenceList.every((sentence) => {
+      const start = Number(sentence?.start_time);
+      const end = Number(sentence?.end_time);
+
+      return (
+        Number.isFinite(start) &&
+        Number.isFinite(end) &&
+        end > start
+      );
+    })
+  );
+}
+
 function normalizeText(text) {
   return String(text || "")
     .toLowerCase()
@@ -372,6 +454,9 @@ export default function App() {
   const pdfInputRef =
     useRef(null);
 
+  const replayEndRef =
+    useRef(null);
+
   const [page, setPage] =
     useState("library");
 
@@ -449,40 +534,26 @@ export default function App() {
     currentSentenceData?.text ||
     "";
 
-  /*
-   * 修复：
-   * Number(null) === 0。
-   *
-   * 原来的写法会把没有时间轴的 null
-   * 错误地转换成 0，导致：
-   *
-   * 00:00 – 00:00
-   *
-   * 播放一开始就触发 handleTimeUpdate()
-   * 里的 pause()，所以进度条完全不动。
-   *
-   * 现在只有真正存在的 start_time / end_time
-   * 才会被当成有效时间轴。
-   */
-
   const currentStart =
-    currentSentenceData?.start_time !== null &&
-    currentSentenceData?.start_time !== undefined &&
-    currentSentenceData?.start_time !== "" &&
     Number.isFinite(
-      Number(currentSentenceData.start_time)
+      Number(
+        currentSentenceData?.start_time
+      )
     )
-      ? Number(currentSentenceData.start_time)
+      ? Number(
+          currentSentenceData.start_time
+        )
       : null;
 
   const currentEnd =
-    currentSentenceData?.end_time !== null &&
-    currentSentenceData?.end_time !== undefined &&
-    currentSentenceData?.end_time !== "" &&
     Number.isFinite(
-      Number(currentSentenceData.end_time)
+      Number(
+        currentSentenceData?.end_time
+      )
     )
-      ? Number(currentSentenceData.end_time)
+      ? Number(
+          currentSentenceData.end_time
+        )
       : null;
 
   /* =====================================================
@@ -500,6 +571,21 @@ export default function App() {
         speed;
     }
   }, [speed]);
+
+  useEffect(() => {
+    if (
+      duration > 0 &&
+      sentences.length > 0 &&
+      !hasValidTimeline(sentences)
+    ) {
+      const timeline = buildAutomaticTimeline(
+        sentences,
+        duration
+      );
+
+      setSentences(timeline);
+    }
+  }, [duration, sentences.length]);
 
   useEffect(() => {
     return () => {
@@ -576,11 +662,7 @@ export default function App() {
 
     setError("");
 
-    if (
-      !file.type.startsWith(
-        "audio/"
-      )
-    ) {
+    if (!file.type.startsWith("audio/")) {
       setError(
         "请选择 MP3、WAV、M4A 等音频文件。"
       );
@@ -588,20 +670,54 @@ export default function App() {
     }
 
     if (audioUrl) {
-      URL.revokeObjectURL(
-        audioUrl
-      );
+      URL.revokeObjectURL(audioUrl);
     }
 
-    const url =
-      URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
 
     setAudioFile(file);
     setAudioUrl(url);
     setCurrentTime(0);
     setDuration(0);
+    replayEndRef.current = null;
 
-    notify("音频已加载");
+    const metadataAudio = new Audio();
+    metadataAudio.preload = "metadata";
+    metadataAudio.src = url;
+
+    metadataAudio.onloadedmetadata = () => {
+      const audioDuration = Number(
+        metadataAudio.duration
+      );
+
+      if (
+        !Number.isFinite(audioDuration) ||
+        audioDuration <= 0
+      ) {
+        notify("音频已加载，但无法读取时长");
+        return;
+      }
+
+      setDuration(audioDuration);
+
+      if (sentences.length > 0 && !hasValidTimeline(sentences)) {
+        const timeline = buildAutomaticTimeline(
+          sentences,
+          audioDuration
+        );
+
+        setSentences(timeline);
+        notify(
+          `音频已加载，已自动生成 ${timeline.length} 句时间轴`
+        );
+      } else {
+        notify("音频已加载");
+      }
+    };
+
+    metadataAudio.onerror = () => {
+      notify("无法读取音频时长，请检查音频文件");
+    };
   }
 
   /* =====================================================
@@ -616,53 +732,49 @@ export default function App() {
     setPdfWarning("");
 
     try {
-      const rawText =
-        await extractPdfText(
-          file
-        );
+      const rawText = await extractPdfText(file);
 
-      const result =
-        cleanPdfTranscript(
-          rawText
-        );
+      const result = cleanPdfTranscript(rawText);
 
-      const list =
-        splitSentences(
-          result.text
-        );
+      const list = splitSentences(result.text);
+
+      const baseSentences = list.map(
+        (text, index) => ({
+          index,
+          text,
+          start_time: null,
+          end_time: null,
+          asr_text: "",
+          auto_timed: false,
+        })
+      );
+
+      const nextSentences =
+        duration > 0
+          ? buildAutomaticTimeline(
+              baseSentences,
+              duration
+            )
+          : baseSentences;
 
       setPdfFile(file);
       setPdfText(result.text);
-
-      setSentences(
-        list.map(
-          (text, index) => ({
-            index,
-            text,
-            start_time: null,
-            end_time: null,
-            asr_text: "",
-          })
-        )
-      );
+      setSentences(nextSentences);
+      setCurrentSentence(0);
 
       if (result.warning) {
-        setPdfWarning(
-          result.warning
-        );
+        setPdfWarning(result.warning);
       }
 
       notify(
         result.text
-          ? `PDF 已读取，共 ${list.length} 句`
+          ? duration > 0
+            ? `PDF 已读取，共 ${list.length} 句，已自动生成时间轴`
+            : `PDF 已读取，共 ${list.length} 句；上传音频后会自动生成时间轴`
           : "PDF 已读取，但没有找到真正的 Transcript"
       );
     } catch (err) {
-      console.error(
-        "selectPdf:",
-        err
-      );
-
+      console.error("selectPdf:", err);
       setError(
         "PDF 读取失败，请确认 PDF 是正常文件。"
       );
@@ -933,33 +1045,6 @@ export default function App() {
   ===================================================== */
 
   function togglePlay() {
-    const audio =
-      audioRef.current;
-
-    if (!audio) {
-      notify(
-        "请先上传或打开音频"
-      );
-      return;
-    }
-
-    if (audio.paused) {
-      audio
-        .play()
-        .catch((err) => {
-          console.error(
-            err
-          );
-          notify(
-            "播放失败，请检查音频文件或 Storage 权限"
-          );
-        });
-    } else {
-      audio.pause();
-    }
-  }
-
-  function replayCurrentSentence() {
     const audio = audioRef.current;
 
     if (!audio) {
@@ -967,168 +1052,88 @@ export default function App() {
       return;
     }
 
-    if (!audioUrl) {
-      notify("当前没有可播放的音频");
-      return;
-    }
+    if (audio.paused) {
+      replayEndRef.current = null;
 
-    /*
-     * 如果当前句已经有时间轴：
-     * 从当前句开始播放，并在句尾停止。
-     */
-    if (
-      currentStart !== null &&
-      currentEnd !== null
-    ) {
-      audio.currentTime = currentStart;
-
-      audio
-        .play()
-        .then(() => {
-          setPlaying(true);
-        })
-        .catch((err) => {
-          console.error("Replay sentence error:", err);
-          notify("本句播放失败，请检查音频");
-        });
-
-      return;
-    }
-
-    /*
-     * 当前还没有时间轴时：
-     * 不再阻止用户操作。
-     *
-     * 先从当前播放位置重新播放。
-     * 后面第④步接入自动句子时间轴后，
-     * 这里会自动升级成精准逐句重播。
-     */
-    const fallbackTime =
-      Number.isFinite(currentTime) &&
-      currentTime > 0
-        ? currentTime
-        : 0;
-
-    audio.currentTime = fallbackTime;
-
-    audio
-      .play()
-      .then(() => {
-        setPlaying(true);
-      })
-      .catch((err) => {
-        console.error("Replay sentence fallback error:", err);
-        notify("音频播放失败，请检查音频");
+      audio.play().catch((err) => {
+        console.error(err);
+        notify(
+          "播放失败，请检查音频文件或 Storage 权限"
+        );
       });
+    } else {
+      audio.pause();
+    }
+  }
+
+  async function replayCurrentSentence() {
+    const audio = audioRef.current;
+    const sentence = sentences[currentSentence];
+
+    if (!audio || !sentence) {
+      notify("请先加载音频和文字稿");
+      return;
+    }
+
+    const start = Number(sentence.start_time);
+    const end = Number(sentence.end_time);
+
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      notify("当前句还没有可用的自动时间轴");
+      return;
+    }
+
+    try {
+      audio.pause();
+      audio.currentTime = start;
+      setCurrentTime(start);
+      replayEndRef.current = end;
+      await audio.play();
+      setPlaying(true);
+    } catch (err) {
+      console.error("replayCurrentSentence:", err);
+      replayEndRef.current = null;
+      notify("本句播放失败");
+    }
   }
 
   function handleTimeUpdate(event) {
     const audio = event.currentTarget;
+    const time = audio.currentTime;
 
-    setCurrentTime(audio.currentTime);
+    setCurrentTime(time);
 
-    /*
-     * 只有存在完整时间轴时，
-     * 才在当前句结束位置自动停止。
-     *
-     * 没有时间轴时，整段音频正常播放。
-     */
+    if (sentences.length > 0) {
+      const index = sentences.findIndex((sentence) => {
+        const start = Number(sentence.start_time);
+        const end = Number(sentence.end_time);
+
+        return (
+          Number.isFinite(start) &&
+          Number.isFinite(end) &&
+          time >= start &&
+          time < end
+        );
+      });
+
+      if (index >= 0 && index !== currentSentence) {
+        setCurrentSentence(index);
+      }
+    }
+
     if (
-      currentStart !== null &&
-      currentEnd !== null &&
+      replayEndRef.current !== null &&
       !audio.paused &&
-      audio.currentTime >= currentEnd
+      time >= replayEndRef.current
     ) {
       audio.pause();
-      audio.currentTime = currentEnd;
-      setPlaying(false);
+      audio.currentTime = replayEndRef.current;
+      setCurrentTime(replayEndRef.current);
+      replayEndRef.current = null;
     }
   }
 
-  function goPreviousSentence() {
-    if (!sentences.length) {
-      notify("当前材料还没有句子");
-      return;
-    }
-
-    const previousIndex =
-      Math.max(0, currentSentence - 1);
-
-    setCurrentSentence(previousIndex);
-
-    setDictation("");
-    setDictationChecked(false);
-    setLookup(null);
-
-    const previousSentence =
-      sentences[previousIndex];
-
-    /*
-     * 有时间轴就同步跳到上一句。
-     */
-    if (
-      audioRef.current &&
-      previousSentence &&
-      previousSentence.start_time !== null &&
-      previousSentence.start_time !== undefined &&
-      previousSentence.start_time !== "" &&
-      Number.isFinite(
-        Number(previousSentence.start_time)
-      )
-    ) {
-      audioRef.current.currentTime =
-        Number(previousSentence.start_time);
-    }
-
-    if (previousIndex === currentSentence) {
-      notify("已经是第一句");
-    }
-  }
-
-  function goNextSentence() {
-    if (!sentences.length) {
-      notify("当前材料还没有句子");
-      return;
-    }
-
-    const nextIndex =
-      Math.min(
-        sentences.length - 1,
-        currentSentence + 1
-      );
-
-    setCurrentSentence(nextIndex);
-
-    setDictation("");
-    setDictationChecked(false);
-    setLookup(null);
-
-    const nextSentence =
-      sentences[nextIndex];
-
-    /*
-     * 有时间轴就同步跳到下一句。
-     */
-    if (
-      audioRef.current &&
-      nextSentence &&
-      nextSentence.start_time !== null &&
-      nextSentence.start_time !== undefined &&
-      nextSentence.start_time !== "" &&
-      Number.isFinite(
-        Number(nextSentence.start_time)
-      )
-    ) {
-      audioRef.current.currentTime =
-        Number(nextSentence.start_time);
-    }
-
-    if (nextIndex === currentSentence) {
-      notify("已经是最后一句");
-    }
-  }
-
-  function selectSentence(index) {
+  async function jumpToSentence(index, autoPlay = true) {
     if (
       index < 0 ||
       index >= sentences.length
@@ -1136,27 +1141,59 @@ export default function App() {
       return;
     }
 
-    setCurrentSentence(index);
+    const sentence = sentences[index];
 
+    setCurrentSentence(index);
     setDictation("");
     setDictationChecked(false);
     setLookup(null);
+    replayEndRef.current = null;
 
-    const item = sentences[index];
+    const start = Number(sentence?.start_time);
 
     if (
       audioRef.current &&
-      item &&
-      item.start_time !== null &&
-      item.start_time !== undefined &&
-      item.start_time !== "" &&
-      Number.isFinite(
-        Number(item.start_time)
-      )
+      Number.isFinite(start)
     ) {
-      audioRef.current.currentTime =
-        Number(item.start_time);
+      audioRef.current.currentTime = start;
+      setCurrentTime(start);
+
+      if (autoPlay) {
+        try {
+          await audioRef.current.play();
+          setPlaying(true);
+        } catch (err) {
+          console.error("jumpToSentence:", err);
+          notify("本句播放失败");
+        }
+      }
     }
+  }
+
+  function goPreviousSentence() {
+    if (!sentences.length) return;
+
+    const nextIndex = Math.max(
+      0,
+      currentSentence - 1
+    );
+
+    jumpToSentence(nextIndex, true);
+  }
+
+  function goNextSentence() {
+    if (!sentences.length) return;
+
+    const nextIndex = Math.min(
+      sentences.length - 1,
+      currentSentence + 1
+    );
+
+    jumpToSentence(nextIndex, true);
+  }
+
+  function selectSentence(index) {
+    jumpToSentence(index, true);
   }
 
   /* =====================================================
@@ -1224,132 +1261,6 @@ export default function App() {
     }
   }
 
-  function markSentenceStart() {
-    if (
-      !audioRef.current
-    ) {
-      return;
-    }
-
-    const time =
-      audioRef.current
-        .currentTime;
-
-    const next =
-      sentences.map(
-        (item, index) =>
-          index ===
-          currentSentence
-            ? {
-                ...item,
-                start_time:
-                  Number(
-                    time.toFixed(
-                      2
-                    )
-                  ),
-              }
-            : item
-      );
-
-    setSentences(next);
-
-    saveSentenceSegments(
-      next
-    );
-
-    notify(
-      `第 ${
-        currentSentence + 1
-      } 句开始位置：${formatTime(
-        time
-      )}`
-    );
-  }
-
-  function markSentenceEnd() {
-    if (
-      !audioRef.current
-    ) {
-      return;
-    }
-
-    const time =
-      audioRef.current
-        .currentTime;
-
-    const item =
-      sentences[
-        currentSentence
-      ];
-
-    if (
-      item &&
-      Number.isFinite(
-        Number(
-          item.start_time
-        )
-      ) &&
-      time <=
-        Number(
-          item.start_time
-        )
-    ) {
-      notify(
-        "结束时间必须晚于开始时间"
-      );
-      return;
-    }
-
-    const next =
-      sentences.map(
-        (item, index) =>
-          index ===
-          currentSentence
-            ? {
-                ...item,
-                end_time:
-                  Number(
-                    time.toFixed(
-                      2
-                    )
-                  ),
-              }
-            : item
-      );
-
-    setSentences(next);
-
-    saveSentenceSegments(
-      next
-    );
-
-    notify(
-      `第 ${
-        currentSentence + 1
-      } 句结束位置：${formatTime(
-        time
-      )}`
-    );
-  }
-
-  /* =====================================================
-     Dictation
-  ===================================================== */
-
-  function checkDictation() {
-    setDictationChecked(
-      true
-    );
-  }
-
-  const dictationScore =
-    normalizeText(
-      dictation
-    ) ===
-    normalizeText(
-      currentSentenceText
-    );
 
   /* =====================================================
      Word Lookup
@@ -2234,74 +2145,34 @@ export default function App() {
               <div className="player-tip">
                 当前句：
                 <strong>
-                  {currentSentence +
-                    1}
+                  {sentences.length
+                    ? currentSentence + 1
+                    : 0}
                 </strong>
 
-                {currentStart !==
-                  null &&
-                currentEnd !==
-                  null ? (
+                {currentStart !== null && currentEnd !== null ? (
                   <>
                     {" "}
-                    已匹配{" "}
-                    {formatTime(
-                      currentStart
-                    )}
+                    自动时间轴：{formatTime(currentStart)}
                     {" – "}
-                    {formatTime(
-                      currentEnd
-                    )}
+                    {formatTime(currentEnd)}
                   </>
                 ) : (
                   <>
                     {" "}
-                    还没有时间轴
+                    等待音频时长后自动生成
                   </>
                 )}
               </div>
 
-              <div
-                style={{
-                  display:
-                    "flex",
-                  gap: "10px",
-                  marginTop:
-                    "14px",
-                  flexWrap:
-                    "wrap",
-                }}
-              >
-                <button
-                  className="secondary"
-                  onClick={
-                    markSentenceStart
-                  }
-                >
-                  ⏱ 标记本句开始
-                </button>
-
-                <button
-                  className="secondary"
-                  onClick={
-                    markSentenceEnd
-                  }
-                >
-                  ⏱ 标记本句结束
-                </button>
-              </div>
-
               <p
                 style={{
-                  marginTop:
-                    "12px",
-                  opacity:
-                    0.65,
-                  fontSize:
-                    "13px",
+                  marginTop: "12px",
+                  opacity: 0.65,
+                  fontSize: "13px",
                 }}
               >
-                第一次使用某份材料时，可以播放音频，在当前句开始的位置点击“标记开始”，到句子结束时点击“标记结束”。保存后即可精准重播。
+                时间轴会根据音频时长和文字稿句子长度自动生成，不需要手动标记开始和结束。
               </p>
             </section>
 
